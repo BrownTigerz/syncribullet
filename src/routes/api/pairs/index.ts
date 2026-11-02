@@ -5,7 +5,7 @@ import {
   readStatus,
   upsertPair,
 } from '~/reconciler/pairs-store.mjs';
-import type { SimklStremioPair } from '~/reconciler/pairs-store.mjs';
+import type { SimklStremioPair } from '~/reconciler/types';
 
 const getSecret = (env: { get: (key: string) => string | undefined }) => {
   const secret = env.get('PRIVATE_ENCRYPTION_KEY');

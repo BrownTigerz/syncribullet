@@ -14,7 +14,7 @@ const USER_AGENT = 'syncribullet/2.0';
 export function simklHeaders(auth) {
   return {
     'Content-Type': 'application/json',
-    Authorization: <redacted>
+    Authorization: 'Bearer ' + auth.access_token,
     'simkl-api-key': auth.client_id,
     'User-Agent': USER_AGENT,
   };

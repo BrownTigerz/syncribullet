@@ -131,7 +131,7 @@ Content-Type: application/x-www-form-urlencoded
 
 grant_type=refresh_token
 client_id=YOUR_CLIENT_ID
-refresh_token=<redacted>
+refresh_token=THE_STORED_REFRESH_TOKEN
 ```
 
 (Registrations of type "Server apps & services" also send their

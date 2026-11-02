@@ -5,7 +5,7 @@ import {
   startDeviceAuth,
 } from '~/components/forms/simkl-login';
 import type { SimklDeviceStart } from '~/components/forms/simkl-login';
-import type { SimklStremioPairAuth } from '~/reconciler/pairs-store.mjs';
+import type { SimklStremioPairAuth } from '~/reconciler/types';
 
 interface ServerPairSummary {
   name: string;

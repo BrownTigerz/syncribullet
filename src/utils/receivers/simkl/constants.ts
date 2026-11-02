@@ -169,6 +169,9 @@ export const defaultCatalogs: Readonly<
   'syncribullet-simkl-shows-completed',
 ] as const satisfies Readonly<(typeof manifestCatalogItems)[number]['id'][]>;
 
+// SimklStremio build: only the "completed" catalogs are enabled by default.
+// The import/reconcile path for this build is add-only watched history, so
+// plantowatch / watching / hold / dropped catalogs default to off.
 export const defaultImportCatalogs: Readonly<
   Record<Importers, Readonly<ImportCatalogs<SimklMCIT, ImporterMCITypes>[]>>
 > = {
@@ -176,7 +179,7 @@ export const defaultImportCatalogs: Readonly<
   stremio: [
     {
       id: 'syncribullet-simkl-movies-plantowatch',
-      value: true,
+      value: false,
       filters: {
         moviesStateFlaggedWatched: false,
         moviesStateFlaggedUnwatched: true,
@@ -212,7 +215,7 @@ export const defaultImportCatalogs: Readonly<
     },
     {
       id: 'syncribullet-simkl-movies-dropped',
-      value: true,
+      value: false,
       filters: {
         moviesStateFlaggedWatched: false,
         moviesStateFlaggedUnwatched: true,
@@ -230,7 +233,7 @@ export const defaultImportCatalogs: Readonly<
     },
     {
       id: 'syncribullet-simkl-shows-watching',
-      value: true,
+      value: false,
       filters: {
         moviesStateFlaggedWatched: null,
         moviesStateFlaggedUnwatched: null,
@@ -248,7 +251,7 @@ export const defaultImportCatalogs: Readonly<
     },
     {
       id: 'syncribullet-simkl-shows-plantowatch',
-      value: true,
+      value: false,
       filters: {
         moviesStateFlaggedWatched: null,
         moviesStateFlaggedUnwatched: null,
@@ -284,7 +287,7 @@ export const defaultImportCatalogs: Readonly<
     },
     {
       id: 'syncribullet-simkl-shows-hold',
-      value: true,
+      value: false,
       filters: {
         moviesStateFlaggedWatched: null,
         moviesStateFlaggedUnwatched: null,
@@ -302,7 +305,7 @@ export const defaultImportCatalogs: Readonly<
     },
     {
       id: 'syncribullet-simkl-shows-dropped',
-      value: true,
+      value: false,
       filters: {
         moviesStateFlaggedWatched: null,
         moviesStateFlaggedUnwatched: null,
@@ -320,7 +323,7 @@ export const defaultImportCatalogs: Readonly<
     },
     {
       id: 'syncribullet-simkl-anime-watching',
-      value: true,
+      value: false,
       filters: {
         moviesStateFlaggedWatched: null,
         moviesStateFlaggedUnwatched: null,
@@ -341,7 +344,7 @@ export const defaultImportCatalogs: Readonly<
     },
     {
       id: 'syncribullet-simkl-anime-plantowatch',
-      value: true,
+      value: false,
       filters: {
         moviesStateFlaggedWatched: false,
         moviesStateFlaggedUnwatched: true,
@@ -383,7 +386,7 @@ export const defaultImportCatalogs: Readonly<
     },
     {
       id: 'syncribullet-simkl-anime-hold',
-      value: true,
+      value: false,
       filters: {
         moviesStateFlaggedWatched: false,
         moviesStateFlaggedUnwatched: true,
@@ -404,7 +407,7 @@ export const defaultImportCatalogs: Readonly<
     },
     {
       id: 'syncribullet-simkl-anime-dropped',
-      value: true,
+      value: false,
       filters: {
         moviesStateFlaggedWatched: false,
         moviesStateFlaggedUnwatched: true,

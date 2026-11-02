@@ -26,7 +26,8 @@
     "start": "ORIGIN=https://56bca7d190fc-syncribullet.baby-beamup.club node server/entry.express",
     "start:dev": "vite --open --mode ssr",
     "start:dev-logging": "NODE_OPTIONS=\"--import ./instrument.mjs\" npm run start:dev",
-    "start:local": "ORIGIN=http://127.0.0.1:3000 node server/entry.express",
+    "start:local": "ORIGIN=${APP_ORIGIN:-http://127.0.0.1:3000} node server/entry.express",
+    "start:reconciler": "node scripts/reconciler.mjs",
     "qwik": "qwik"
   },
   "devDependencies": {

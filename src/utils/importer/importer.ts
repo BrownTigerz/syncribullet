@@ -99,7 +99,7 @@ export abstract class Importer<
         ...catalog?.filters,
       };
     }
-    this._startImport(libraryItems, importer, userConfig.auth);
+    await this._startImport(libraryItems, importer, userConfig.auth);
   }
 
   abstract _convertFromImportCatalogLibraryItem(

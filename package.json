@@ -28,6 +28,7 @@
     "start:dev-logging": "NODE_OPTIONS=\"--import ./instrument.mjs\" npm run start:dev",
     "start:local": "ORIGIN=${APP_ORIGIN:-http://127.0.0.1:3000} node server/entry.express",
     "start:reconciler": "node scripts/reconciler.mjs",
+    "test:reconciler": "node --test tests/reconciler.test.mjs",
     "qwik": "qwik"
   },
   "devDependencies": {

@@ -12,11 +12,14 @@ interface ServerPairSummary {
   updatedAt?: string;
   watchTogether: boolean;
   hasMirror: boolean;
+  hasWatchTogetherBaseline: boolean;
+  watchTogetherBaselineCapturedAt: string | null;
   status: {
     lastRunAt?: string;
     lastSuccessAt?: string;
     lastError?: string;
     needsReauth?: boolean;
+    needsBaseline?: boolean;
     addedMovies?: number;
     addedEpisodes?: number;
   } | null;
@@ -64,6 +67,8 @@ const readSimklAuth = function (): SimklStremioPairAuth | null {
  * TK's pair can also carry a Watch Together mirror Simkl connection:
  * a second device-flow sign-in captured here, labelled as the mirror
  * account (it must be a different Simkl app/account, e.g. Ange's).
+ * Saving with Watch Together on makes the server snapshot the pair's
+ * current watched set as the starting point; only later watches mirror.
  */
 export default component$(() => {
   const pairName = useSignal('TK');
@@ -256,7 +261,7 @@ export default component$(() => {
             }}
           />
           <span>
-            Watch Together — Also Write This Pair's Watched Items To A
+            Watch Together — Also Write Things Watched From Now On To A
             Second Simkl Account
           </span>
         </label>
@@ -265,9 +270,12 @@ export default component$(() => {
           <div class="flex flex-col gap-3 items-start border border-outline rounded-lg p-4">
             <h3 class="font-bold text-xl">Mirror Simkl Account</h3>
             <span class="text-on-surface-variant">
-              Sign in with the second person's Simkl app Client Id (their
-              own app, created under their Simkl account). These watches are
-              mirrored to that account while Watch Together is on.
+              Switching Watch Together on starts from that moment. When
+              this pair is saved, the server records what has already been
+              watched as the starting point. Only things watched after
+              that are mirrored; nothing from before is copied. Sign in
+              with the second person's Simkl app Client Id (their own app,
+              created under their Simkl account).
             </span>
             {mirrorStatus.value === 'connected' ? (
               <p class="text-primary">Mirror Simkl account connected.</p>
@@ -337,6 +345,12 @@ export default component$(() => {
                 {pair.name}
                 {pair.watchTogether ? ' · Watch Together On' : ''}
                 {pair.hasMirror ? ' · Mirror Connected' : ''}
+                {pair.hasWatchTogetherBaseline
+                  ? ` · Starting Point Saved ${pair.watchTogetherBaselineCapturedAt || ''}`
+                  : ''}
+                {pair.status?.needsBaseline
+                  ? ' · Watch Together Paused: No Starting Point Saved'
+                  : ''}
                 {pair.status?.needsReauth
                   ? ' · Needs Reconnect (Simkl Token Rejected)'
                   : pair.status?.lastSuccessAt

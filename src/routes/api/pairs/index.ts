@@ -6,6 +6,11 @@ import {
   upsertPair,
 } from '~/reconciler/pairs-store.mjs';
 import type { SimklStremioPair } from '~/reconciler/types';
+import {
+  WatchTogetherBaselineError,
+  isWatchTogetherBaseline,
+  resolveWatchTogetherBaseline,
+} from '~/reconciler/watch-together-baseline.mjs';
 
 const getSecret = (env: { get: (key: string) => string | undefined }) => {
   const secret = env.get('PRIVATE_ENCRYPTION_KEY');
@@ -42,6 +47,14 @@ export const onGet: RequestHandler = async ({ json, env }) => {
       updatedAt: pair.updatedAt,
       watchTogether: !!pair.watchTogether,
       hasMirror: !!pair.mirrorSimkl,
+      hasWatchTogetherBaseline: isWatchTogetherBaseline(
+        pair.watchTogetherBaseline,
+      ),
+      watchTogetherBaselineCapturedAt:
+        pair.watchTogetherBaseline &&
+        isWatchTogetherBaseline(pair.watchTogetherBaseline)
+          ? pair.watchTogetherBaseline.capturedAt
+          : null,
       status: status.pairs?.[pair.name] || null,
     })),
   });
@@ -83,8 +96,43 @@ export const onPost: RequestHandler = async ({ json, env, parseBody }) => {
     return;
   }
 
+  const name = body.name.trim();
+  let secret: string;
+  let watchTogetherBaseline: SimklStremioPair['watchTogetherBaseline'];
+  try {
+    secret = getSecret(env);
+    const existingPairs = loadPairs(secret) as SimklStremioPair[];
+    const existingPair = existingPairs.find(
+      (pair: SimklStremioPair) => pair.name === name,
+    );
+    // Baseline rules live in resolveWatchTogetherBaseline:
+    // - turning Watch Together on captures the current watched set;
+    // - re-saving while it is already on keeps the existing baseline;
+    // - turning it off drops the baseline.
+    // If capture fails, this throws and the pair is NOT saved — a
+    // Watch Together pair without a baseline must never be stored,
+    // because the reconciler would have no safe starting point.
+    watchTogetherBaseline = await resolveWatchTogetherBaseline({
+      existingPair,
+      watchTogether: !!body.watchTogether,
+      stremioAuthKey: body.stremioAuthKey,
+    });
+  } catch (e) {
+    if (e instanceof WatchTogetherBaselineError) {
+      json(502, {
+        ok: false,
+        error:
+          'Watch Together was not saved because its starting point could ' +
+          `not be captured. ${e.message}`,
+      });
+    } else {
+      json(500, { ok: false, error: (e as Error).message });
+    }
+    return;
+  }
+
   const pair: SimklStremioPair = {
-    name: body.name.trim(),
+    name,
     stremioAuthKey: body.stremioAuthKey,
     simkl: {
       access_token: body.simkl.access_token,
@@ -101,10 +149,11 @@ export const onPost: RequestHandler = async ({ json, env, parseBody }) => {
           expires_at: body.mirrorSimkl.expires_at,
         }
       : null,
+    watchTogetherBaseline,
   };
 
   try {
-    upsertPair(pair, getSecret(env));
+    upsertPair(pair, secret);
   } catch (e) {
     json(500, { ok: false, error: (e as Error).message });
     return;

@@ -13,6 +13,12 @@
 //   simkl: { access_token, client_id, refresh_token?, expires_at? },
 //   watchTogether?: boolean,
 //   mirrorSimkl?: { access_token, client_id, refresh_token?, expires_at? } | null,
+//   watchTogetherBaseline?: {
+//     version: 1,
+//     capturedAt: string (ISO),
+//     movies: string[],
+//     shows: { [imdb: string]: string[] } // episode keys "season:episode"
+//   } | null,
 //   updatedAt: string (ISO)
 // }
 

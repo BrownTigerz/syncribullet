@@ -107,8 +107,11 @@ app under Ange's Simkl account. They are not interchangeable.
 
 ## Step 7 — Watch Together (TK's Pair Only)
 
-Watch Together mirrors everything TK watches to Ange's Simkl as well.
-It is a switch on TK's pair only, not always-on.
+Watch Together mirrors what TK watches after it is switched on to
+Ange's Simkl as well. It is a switch on TK's pair only, not always-on.
+
+Switching it on starts from that moment: only things watched after
+that are mirrored; nothing from before is copied.
 
 1. On the PC, open `http://localhost:8181`.
 2. In **Save Pair To Server**, set Pair Name to `TK` and tick
@@ -117,15 +120,18 @@ It is a switch on TK's pair only, not always-on.
    Simkl app, click **Get Code**, then **Validate** and approve on Simkl
    signed in as **Ange**.
 4. Click **Save Pair** (this replaces TK's saved pair with the mirror
-   attached).
+   attached). As part of that save, the server records TK's current
+   watched movies and episodes as the starting point. If that starting
+   point cannot be recorded, the save fails and Watch Together is not
+   stored.
 5. To turn it off later: untick Watch Together and Save Pair again.
+   Turning it off drops the saved starting point. To start over from a
+   new moment, save once with Watch Together off, then turn it on and
+   save again; the second save records a new starting point.
 
-Note: the mirror is diffed against Ange's own library, so the first run
-after enabling Watch Together mirrors TK's full watched history —
-everything he has watched that her Simkl does not already have — to her
-account. If that is not wanted, decide before enabling it; there is no
-"only from now on" mode, and Simkl entries are never deleted by this
-build, so a mirror run cannot be undone from here.
+Re-saving the pair while Watch Together stays on — for example to
+reconnect a token — keeps the original starting point. It does not
+move forward.
 
 ## Step 8 — Install The Addon In Stremio Kai
 

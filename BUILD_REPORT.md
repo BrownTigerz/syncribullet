@@ -4,6 +4,42 @@ Branch: `build/simklstremio` (local commits only, never pushed).
 Base: upstream `1415a46`. Audience: TK, for `E:\Projects\SimklStremio`.
 Setup steps live in SETUP.md. Auth research lives in docs/SIMKL_AUTH.md.
 
+## Correction — Watch Together Baseline
+
+Commit: this correction commit on `build/simklstremio`, on top of
+`e8cca81`. It supersedes the original Watch Together behavior described
+in the first build: the mirror no longer receives TK's full watched
+history.
+
+- Watch Together is prospective only. When a pair is saved with Watch
+  Together turning on, `POST /api/pairs` uses the pair's Stremio
+  authKey to fetch the current watched movies and episodes and stores
+  them in the pair record as `watchTogetherBaseline` (movie IMDb ids;
+  episode keys as `season:episode` per show IMDb id; plus
+  `capturedAt`). See `src/reconciler/watch-together-baseline.mjs`.
+- A plain re-save while Watch Together is already on keeps the stored
+  baseline — it never moves forward. Saving with Watch Together off
+  drops the baseline. Saving off first and then on again captures a
+  new starting point.
+- If the baseline cannot be captured completely, the save fails and
+  the pair is not stored. A stored Watch Together pair always has a
+  baseline from this flow.
+- The mirror pass now posts only `(current watched set - baseline)`,
+  diffed again against the mirror account's own Simkl library. The
+  pair's own Stremio -> Simkl reconcile is unchanged and still uses the
+  full state diff, so pre-baseline items still reach TK's own Simkl.
+- Legacy or damaged pair records with Watch Together on but no valid
+  baseline mirror nothing and are flagged `needsBaseline` in
+  status.json. There is no full-history fallback anywhere.
+
+Correction gates: `npm run build` passes (type check and lint);
+`npm run test:reconciler` passes 12/12, including the four mirror
+cases (baseline item not mirrored, post-baseline item mirrored,
+no-baseline mirrors nothing and flags `needsBaseline`, and the pair's
+own full diff still posts pre-baseline items to its own Simkl); the
+server smoke test passes, including a Watch Together save with an
+unusable Stremio key returning 502 and storing nothing.
+
 ## Phase 1 — Simkl AUTH V2 Findings (Short Version)
 
 - Stock Simkl login is dead for new apps: Simkl's portal now issues
@@ -83,10 +119,17 @@ Reconciler and pair saving (new code):
   `POST /sync/history`, and the V2 refresh call. No delete/remove or
   add-to-list call exists in this file by design.
 - `src/reconciler/reconcile.mjs` — the runner (see below).
+- `src/reconciler/watch-together-baseline.mjs` — Watch Together
+  starting-point snapshots: capture, save-flow keep/drop rules, and
+  subtraction for the mirror pass (added by the correction above).
+- `tests/reconciler.test.mjs` — the headless reconciler test suite,
+  run with `npm run test:reconciler`.
 - `scripts/reconciler.mjs` — headless entry point.
 - `src/routes/api/pairs/index.ts` — `POST /api/pairs` validates and
-  saves a pair; `GET /api/pairs` returns pair names and run status
-  only, never tokens.
+  saves a pair, resolving the Watch Together baseline (capture, keep,
+  or drop) before anything is stored; `GET /api/pairs` returns pair
+  names, baseline presence/capture time, and run status only, never
+  tokens.
 - `src/components/sections/save-pair/save-pair-section.tsx` — the
   "Save Pair To Server" section on the configure page: reads the
   browser's current Stremio (link-flow authKey) and Simkl connections,
@@ -114,8 +157,10 @@ correctly.
   anything — a full state diff is what makes downtime safe: miss a
   week of runs and the next run backfills the whole week.
 - Watch Together: if the pair has it on and a mirror Simkl connection
-  is saved, the same watched set is diffed against the mirror account's
-  own library and the missing items are posted there too.
+  is saved, only the watched items added since the pair's stored
+  starting-point baseline are diffed against the mirror account's own
+  library and posted there. With no valid baseline, the mirror pass is
+  skipped and the pair is flagged `needsBaseline`.
 - Token lifecycle: if the access token is inside its last day (or a
   call returns 401), the reconciler refreshes it with the stored
   refresh token, persists the new token into pairs.json, and retries
@@ -124,26 +169,32 @@ correctly.
 - A failed run changes no synced state and is retried next run.
   status.json records per pair: last run, last success, added
   movie/episode counts (primary and mirror), skipped count,
-  `needsReauth`, last error.
+  `needsReauth`, `needsBaseline`, last error.
 
 ## Gate Results (This VM)
 
 - `npm run build` — **pass** (exit 0: type check ✓, lint ✓, client and
   server bundles built).
 - `npx tsc --noEmit` — **pass**, zero errors.
-- Reconciler module tests (headless, stubbed network) — **11/11
-  groups pass**: encrypted store roundtrip (no plaintext tokens on
-  disk, wrong key throws, upsert, auth update), Simkl library parsing
-  (completed movies, per-episode rows, last-watched fallback,
-  completed show), bitfield roundtrip (skipped episode stays
-  unwatched), watched extraction (removed/unwatched ignored, non-IMDb
-  counted as skipped), zero-pair run writes status.json.
-- Local server smoke test (built server, port 8899) — configure page
-  returns 200 and renders the Save Pair To Server section;
-  `GET /api/pairs` 200; `POST /api/pairs` with a well-formed body 200
-  and the pair lists back with metadata only; invalid body 400;
-  stored pairs.json contains no plaintext token. Reconciler entry
-  boots, runs once against an empty data dir, writes status.json.
+- Reconciler module tests (headless, stubbed network) —
+  **12/12 pass** (`npm run test:reconciler`): encrypted store
+  roundtrip (no plaintext tokens on disk, wrong key throws, upsert,
+  auth update), Simkl library parsing (completed movies, per-episode
+  rows, last-watched fallback, completed show), bitfield roundtrip
+  (skipped episode stays unwatched), watched extraction
+  (removed/unwatched ignored, non-IMDb counted as skipped), zero-pair
+  run writes status.json, baseline snapshot/subtraction and save-flow
+  rules (capture on enable, keep on re-save, drop when off, partial
+  capture fails), and the four Watch Together mirror cases from the
+  correction section.
+- Local server smoke test (built server) — configure page returns 200
+  and renders the Save Pair To Server section; `GET /api/pairs` 200;
+  `POST /api/pairs` with a well-formed Watch Together-off body 200 and
+  the pair lists back with metadata only, including
+  `hasWatchTogetherBaseline: false`; stored pairs.json contains no
+  plaintext token; a Watch Together-on save whose Stremio key cannot
+  be read returns 502 and stores nothing. Reconciler entry boots, runs
+  once against an empty data dir, writes status.json.
 - Docker — **not available in this VM** (`docker` not installed), so
   the image build itself is gated on TK's PC.
 

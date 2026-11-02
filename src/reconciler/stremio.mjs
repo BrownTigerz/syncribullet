@@ -75,7 +75,10 @@ const IMDB_ID = /^tt\d+$/;
  * {
  *   movies: Map<imdbId, { title }>,
  *   shows:  Map<imdbId, { title, episodes: Set<'season:episode'> }>,
- *   skipped: number  // watched items that could not be resolved safely
+ *   skipped: number,    // watched items not included in the result
+ *   unresolved: number  // skipped items that might resolve on a later run
+ *                       // (out-of-scope non-IMDb items are skipped, not
+ *                       // unresolved — they can never enter the diff)
  * }
  *
  * Episodes come from the Cinemeta watched bitfield whenever Stremio
@@ -89,6 +92,7 @@ export async function extractWatched(libraryItems, log = console) {
   const movies = new Map();
   const shows = new Map();
   let skipped = 0;
+  let unresolved = 0;
 
   for (const item of libraryItems) {
     if (!item || item.removed) {
@@ -123,10 +127,12 @@ export async function extractWatched(libraryItems, log = console) {
         `[reconciler] Could not load episode list for ${showOrMovieId} (${item.name}): ${e.message}. Skipping this run; it will be retried.`,
       );
       skipped++;
+      unresolved++;
       continue;
     }
     if (videos.length === 0) {
       skipped++;
+      unresolved++;
       continue;
     }
 
@@ -171,10 +177,11 @@ export async function extractWatched(libraryItems, log = console) {
 
     if (episodes.size === 0) {
       skipped++;
+      unresolved++;
       continue;
     }
     shows.set(showOrMovieId, { title: item.name, episodes });
   }
 
-  return { movies, shows, skipped };
+  return { movies, shows, skipped, unresolved };
 }

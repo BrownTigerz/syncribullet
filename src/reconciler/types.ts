@@ -10,11 +10,19 @@ export interface SimklStremioPairAuth {
   expires_at?: number;
 }
 
+export interface WatchTogetherBaseline {
+  version: 1;
+  capturedAt: string;
+  movies: string[];
+  shows: Record<string, string[]>;
+}
+
 export interface SimklStremioPair {
   name: string;
   stremioAuthKey: string;
   simkl: SimklStremioPairAuth;
   watchTogether?: boolean;
   mirrorSimkl?: SimklStremioPairAuth | null;
+  watchTogetherBaseline?: WatchTogetherBaseline | null;
   updatedAt?: string;
 }

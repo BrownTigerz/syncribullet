@@ -12,6 +12,13 @@
 //
 // Add-only: the only Simkl write anywhere in the reconciler is
 // POST /sync/history. Nothing is ever removed, moved, or added to a list.
+//
+// Watch Together is the one exception to "diff the full watched set":
+// the mirror account receives only (current watched set - the baseline
+// captured when Watch Together was switched on), diffed against the
+// mirror's own library. A Watch Together pair with no valid baseline
+// mirrors nothing and is flagged needsBaseline — a full-history mirror
+// is never used as a fallback.
 
 import {
   getDataDir,
@@ -27,6 +34,10 @@ import {
   simklHasEpisode,
 } from './simkl.mjs';
 import { extractWatched, fetchStremioLibrary, HttpError } from './stremio.mjs';
+import {
+  isWatchTogetherBaseline,
+  subtractWatchTogetherBaseline,
+} from './watch-together-baseline.mjs';
 
 const REFRESH_WINDOW_MS = 24 * 60 * 60 * 1000;
 
@@ -163,6 +174,7 @@ export async function reconcilePair(pair, { secret, dataDir, log = console }) {
     lastSuccessAt: null,
     lastError: null,
     needsReauth: false,
+    needsBaseline: false,
     addedMovies: 0,
     addedEpisodes: 0,
     mirrorAddedMovies: 0,
@@ -187,26 +199,43 @@ export async function reconcilePair(pair, { secret, dataDir, log = console }) {
     entry.addedMovies = primary.addedMovies;
     entry.addedEpisodes = primary.addedEpisodes;
 
-    if (pair.watchTogether && pair.mirrorSimkl) {
-      const mirror = await syncTarget({
-        pairName: pair.name,
-        targetKey: 'mirrorSimkl',
-        auth: pair.mirrorSimkl,
-        watched,
-        secret,
-        dataDir,
-        log,
-      });
-      entry.mirrorAddedMovies = mirror.addedMovies;
-      entry.mirrorAddedEpisodes = mirror.addedEpisodes;
+    if (pair.watchTogether) {
+      if (!isWatchTogetherBaseline(pair.watchTogetherBaseline)) {
+        // No safe starting point: mirror NOTHING. Falling back to the
+        // full watched set here would copy the pair's entire history to
+        // the mirror account, which is exactly what the baseline exists
+        // to prevent. The pair's own reconcile above is unaffected.
+        entry.needsBaseline = true;
+        log.error(
+          `[reconciler] ${pair.name}: Watch Together is on but no starting-point baseline is stored; mirroring nothing. Save the pair again with Watch Together on to capture the starting point.`,
+        );
+      } else if (pair.mirrorSimkl) {
+        const mirrorWatched = subtractWatchTogetherBaseline(
+          watched,
+          pair.watchTogetherBaseline,
+        );
+        const mirror = await syncTarget({
+          pairName: pair.name,
+          targetKey: 'mirrorSimkl',
+          auth: pair.mirrorSimkl,
+          watched: mirrorWatched,
+          secret,
+          dataDir,
+          log,
+        });
+        entry.mirrorAddedMovies = mirror.addedMovies;
+        entry.mirrorAddedEpisodes = mirror.addedEpisodes;
+      }
     }
 
     entry.lastSuccessAt = new Date().toISOString();
     log.log(
       `[reconciler] ${pair.name}: run complete — added ${entry.addedMovies} movie(s), ${entry.addedEpisodes} episode(s)` +
-        (pair.watchTogether && pair.mirrorSimkl
-          ? `; mirror added ${entry.mirrorAddedMovies} movie(s), ${entry.mirrorAddedEpisodes} episode(s)`
-          : '') +
+        (entry.needsBaseline
+          ? '; mirror skipped (no Watch Together baseline)'
+          : pair.watchTogether && pair.mirrorSimkl
+            ? `; mirror added ${entry.mirrorAddedMovies} movie(s), ${entry.mirrorAddedEpisodes} episode(s)`
+            : '') +
         (entry.skipped ? `; ${entry.skipped} watched item(s) skipped (unresolvable)` : ''),
     );
   } catch (e) {

@@ -59,8 +59,14 @@ RUN if [ -f .env.built ]; then cat .env.built >> /etc/environment; fi
 # Expose port
 EXPOSE 3000
 
+# Data directory for the reconciler (pairs.json / status.json).
+# A bind mount over /app/data shadows this; the ownership matters for
+# plain `docker run` without a mount.
+RUN mkdir -p /app/data
+
 # Create and use a non-root user
 RUN adduser -D appuser
+RUN chown appuser:appuser /app/data
 USER appuser
 
 # Optional runtime env var: SHOW_PRIVATE_ENCRYPTION_KEY
@@ -80,6 +86,7 @@ ENTRYPOINT ["/bin/sh", "-c", " \
     if [ \"$SHOW_PRIVATE_ENCRYPTION_KEY\" = \"true\" ]; then \
         echo \"$MSG: $PRIVATE_ENCRYPTION_KEY\"; \
     fi; \
+    node scripts/reconciler.mjs & \
     exec npm run start:local \
 "]
 

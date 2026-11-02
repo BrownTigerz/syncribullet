@@ -6,5 +6,9 @@ export type SimklUserSettings = UserSettings<SimklMCIT> & {
   auth?: {
     access_token: string;
     client_id: string;
+    /** AUTH V2 only: refresh token (180 days, sliding) from the device flow. */
+    refresh_token?: string;
+    /** AUTH V2 only: epoch ms when the access token expires (7 days). */
+    expires_at?: number;
   };
 };

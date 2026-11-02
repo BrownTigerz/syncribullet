@@ -1,0 +1,25 @@
+# SimklStremio — syncribullet fork for TK + Ange.
+# Runs the web app and the server-side reconciler in one container.
+# Usage: copy .env.example to .env, set PRIVATE_ENCRYPTION_KEY, then
+#   docker compose up -d --build
+
+services:
+  syncribullet:
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+      args:
+        # The real key is provided at runtime via .env; "runtime" tells
+        # the build not to embed a build-time key.
+        PRIVATE_ENCRYPTION_KEY: runtime
+    image: simklstremio:local
+    container_name: simklstremio
+    restart: unless-stopped
+    ports:
+      - "${HOST_PORT:-8181}:3000"
+    environment:
+      PRIVATE_ENCRYPTION_KEY: ${PRIVATE_ENCRYPTION_KEY:?Set PRIVATE_ENCRYPTION_KEY in .env}
+      APP_ORIGIN: http://localhost:${HOST_PORT:-8181}
+      RECONCILE_INTERVAL_MINUTES: ${RECONCILE_INTERVAL_MINUTES:-30}
+    volumes:
+      - ./data:/app/data

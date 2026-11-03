@@ -541,3 +541,212 @@ debug log everywhere a write is recorded.
   are absent), and the new lines inside Stremio Kai on TK's PC.
   Applying this build needs only `docker compose up -d --build` —
   no pair re-save, no re-setup.
+
+## Solo / Together Switch — WATCH_TOGETHER .env Override (Added 2026-11-03)
+
+TK's request: switching Watch Together on the configure page meant
+re-entering Ange's Client Id and redoing her mirror approval every
+time, because the page holds nothing between visits and a
+Watch Together-off save discarded the stored mirror sign-in. He
+asked for the switch to be a file edit instead. This build makes it
+one line in `.env`, plus a restart.
+
+**Design**
+
+- **One shared effective-mode gate.** `effectiveWatchTogether(pair,
+  env)` in `src/reconciler/watch-together-baseline.mjs` returns the
+  `WATCH_TOGETHER` override when set, else the pair's stored flag.
+  `parseWatchTogetherOverride` accepts `on`/`off` and
+  `true`/`false`, case-insensitive with surrounding whitespace
+  ignored; unset, empty, or unrecognized values are *no override*,
+  never a guess. Both mirroring paths — the reconciler's mirror
+  pass and the instant mirror (`decideLiveMirror` /
+  `mirrorLivePick`, which gained an optional `env` parameter) —
+  consult this one helper, so the switch can never be half-applied.
+- **Parked mirror sign-in.** The pair-save route
+  (`src/routes/api/pairs/index.ts`) now resolves the stored mirror
+  credentials through `resolveMirrorForSave(supplied, existingPair)`
+  in `pairs-store.mjs`: freshly supplied credentials (a completed
+  mirror approval) win; when a save supplies none, the credentials
+  already stored on the pair are kept. A Watch Together-off save
+  therefore parks the sign-in instead of deleting it. The save-time
+  baseline rules are otherwise unchanged (turning on captures,
+  re-saving while on keeps, turning off drops). The
+  Watch Together-on validation also accepts the parked credentials,
+  so re-enabling from the page no longer demands a fresh approval
+  either. First-ever enable still needs the one-time approval,
+  because there is nothing parked yet.
+- **Applied-mode tracking.** The pair record gains an optional
+  field, `watchTogetherAppliedMode: 'on' | 'off'` — the effective
+  mode the reconciler last applied. It is stored **on the pair
+  record** (via the new `updatePairWatchTogether` in
+  `pairs-store.mjs`, which reloads the store and mutates only the
+  Watch Together fields, so a token refreshed moments earlier is
+  never clobbered by a stale in-memory pair) rather than in
+  `status.json`: the mode is a property of the pair's stored
+  state, must survive status rewrites, and travels with the
+  baseline it describes. A configure-page save rebuilds the record
+  without the field, resetting it to unset for the reconciler to
+  re-derive (adopt / recapture / set off) — deliberately *not*
+  preserved across page saves, so a baseline captured by the page
+  flow is adopted exactly, never recaptured seconds later.
+- **Transition rules** (reconciler, per pair, per run). The whole
+  state machine is gated on the pair carrying some trace of the
+  feature (`wtTracked`: a mirror sign-in, the stored flag, a valid
+  baseline, or a recorded applied mode):
+  - Effective on + applied on + valid baseline → mirror as usual.
+  - Effective on + applied unset + valid baseline → **adopt** the
+    stored baseline (record applied=on, silently — adoption adds
+    no log lines). This is TK's live pair on deploy day.
+  - Effective on + applied off, or no valid baseline → **capture a
+    fresh baseline** now (`captureWatchTogetherBaseline` against
+    the pair's Stremio account), store it, record applied=on, log
+    `[mirror:<name>] Watch Together switched on — starting point
+    captured (N movie(s), M episode(s))`, and mirror nothing beyond
+    it this run (the pass runs against the fresh baseline, so the
+    diff is empty). If the capture fails: log the failure, flag
+    `needsBaseline`, mirror nothing, and leave the applied mode
+    untouched so the next run retries — fail closed. Readiness is
+    revoked *before* the capture attempt, so a failed capture can
+    never fall through to mirroring against the stale pre-switch
+    baseline (a bug the new tests caught during this build).
+  - Effective off → no mirror pass, no live mirror; record
+    applied=off (once, not per run). When the off state comes from
+    the .env override and the pair has a mirror configured, each
+    run logs one line: `[mirror:<name>] Watch Together off —
+    mirror skipped (solo)`.
+  - Pairs with no Watch Together trace at all (Ange's) skip every
+    branch in every switch state: no store writes, no mirror log
+    lines, no `needsBaseline` — the override never invents Watch
+    Together for a pair that was never set up for it. (The first
+    smoke run caught the env=on case leaking into Ange's pair;
+    the state machine is now gated, with a regression test.)
+- **Live mirror guard.** Beyond the effective-mode gate,
+  `decideLiveMirror` skips silently when the pair's applied mode
+  is `'off'`: after a switch-on, until the reconciler's first run
+  captures the fresh starting point, the stored baseline is still
+  the pre-solo one and a live pick against it could copy a solo
+  watch across. The reconciler remains the mechanism of record
+  and covers the pick once the switch is applied.
+- **Run summaries** in `reconcile.mjs` now key the mirror suffix
+  on whether the mirror pass actually ran (`mirrorRan`) instead of
+  the stored flag, so env-driven runs report their mirror counts.
+- **Behavior change to note:** a Watch Together pair *with mirror
+  credentials* but no valid baseline no longer sits at
+  `needsBaseline` until a page re-save — the reconciler captures a
+  starting point at runtime (transition rule above). The
+  no-credentials case keeps the old report verbatim, and capture
+  failure still flags `needsBaseline`. One pre-existing test was
+  updated to the new semantics (see Gates). With the env var unset
+  and a pair in steady state, run behavior and log lines are
+  unchanged from the previous build.
+- **Env plumbing.** `docker-compose.yml` enumerates its
+  `environment:` block explicitly (there is no `env_file`), so
+  `WATCH_TOGETHER: ${WATCH_TOGETHER:-}` was added there — unset in
+  `.env` passes an empty string, which the parser treats as no
+  override. Both container processes inherit it: the reconciler
+  (`scripts/reconciler.mjs`) and the web server (the instant
+  mirror reads the same `process.env`). `.env.example` documents
+  the line. No Dockerfile change was needed.
+
+**Files Changed**
+
+- `src/reconciler/watch-together-baseline.mjs`:
+  `parseWatchTogetherOverride`, `watchTogetherOverride`,
+  `effectiveWatchTogether` (new).
+- `src/reconciler/pairs-store.mjs`: `updatePairWatchTogether` and
+  `resolveMirrorForSave` (new); pair-shape comment documents
+  `watchTogetherAppliedMode`.
+- `src/reconciler/reconcile.mjs`: the mirror section is now the
+  applied-mode state machine described above; `reconcilePair` and
+  `runReconcilerOnce` accept an optional `env`; run summaries key
+  on `mirrorRan`.
+- `src/reconciler/live-mirror.mjs`: effective-mode gate +
+  applied-mode `switch-pending` guard in `decideLiveMirror`;
+  `mirrorLivePick` takes an optional `env`.
+- `src/reconciler/types.ts`: `watchTogetherAppliedMode?: 'on' |
+  'off'` on `SimklStremioPair`.
+- `src/routes/api/pairs/index.ts`: parked mirror sign-in via
+  `resolveMirrorForSave`; the existing pair is loaded before the
+  Watch Together validation so parked credentials satisfy it.
+- `docker-compose.yml`: `WATCH_TOGETHER` added to the
+  `environment:` block. `.env.example`: the line documented.
+- `tests/reconciler.test.mjs`: 10 new tests (suite now 26) + 1
+  updated (below).
+- `tests/live-mirror.test.mjs`: 3 new tests (suite now 17).
+- `SETUP.md`: Step 7 notes the parked sign-in; new section
+  "Watch Together — The Solo / Together Switch (.env)".
+- `BUILD_REPORT.md`: this section.
+
+**Gate Results (This VM)**
+
+- Pre-change baseline, verified before editing:
+  `npm run test:reconciler` 16/16, `npm run test:live-mirror`
+  14/14.
+- `npm run test:reconciler`: **26/26 pass.** New: override
+  parsing and the effective-mode matrix; `updatePairWatchTogether`
+  field isolation; `resolveMirrorForSave` fresh-wins / parked /
+  partial / none cases; switch-on capture happening **exactly
+  once** across two consecutive runs (a solo-period watch stays
+  unmirrored, a post-capture watch mirrors, `capturedAt`
+  unchanged); no recapture on a simulated restart with applied=on;
+  adoption of an existing valid baseline when the applied mode is
+  unset; `WATCH_TOGETHER=off` suppressing the reconciler mirror
+  with the pair flag on (solo line exactly once, TK's own sync
+  unaffected, Ange's stored record byte-identical, zero
+  `[mirror:Ange]` lines); `WATCH_TOGETHER=on` mirroring through a
+  parked sign-in with the pair flag off; capture failure leaving
+  the applied mode off and the old baseline on disk, nothing
+  mirrored, mirror library never fetched; and the regression test
+  that env=on never invents Watch Together for a setup-less pair.
+  **One pre-existing test updated:** "Watch Together without a
+  baseline mirrors nothing and flags needsBaseline" became
+  "…captures a starting point and mirrors nothing beyond it" —
+  the transition rules replace the sit-at-needsBaseline behavior
+  for pairs that have mirror credentials (see Design); the
+  failure path and the no-credentials path keep their
+  needsBaseline coverage.
+- `npm run test:live-mirror`: **17/17 pass** (the previous 14
+  unchanged). New: env=off silencing the live mirror with the
+  pair flag on (plus a garbage value falling back to the flag);
+  env=on firing through a parked sign-in with the pair flag off;
+  the `switch-pending` guard skipping picks while the applied
+  mode is still off.
+- `npm run build`: **0 errors** (type check and lint checked; 18
+  warnings, all pre-existing — the one in
+  `src/routes/api/pairs/index.ts` is the pre-existing
+  `body.simkl?.` optional-chain warning on a line this build did
+  not change).
+- Smoke: the **real reconciler entry** (`node scripts/reconciler.mjs`,
+  one fresh process per phase) ran against a fixture `DATA_DIR`
+  (TK pair in deploy-day state — flag on, stored baseline, *no*
+  applied-mode field; Ange pair plain) with `fetch` stubbed at the
+  process boundary via a `--import` preload and a mutable
+  scenario file, across the sequence **unset → off → on → on →
+  restart**: **25/25 checks passed.** Unset adopted the stored
+  baseline (post-baseline movie + episode mirrored, no capture,
+  applied recorded on); off logged the solo line exactly once,
+  posted nothing to the mirror, recorded applied=off, and left
+  the baseline untouched; on captured exactly one fresh starting
+  point — `(3 movie(s), 2 episode(s))`, including the watch made
+  during solo — and mirrored nothing that run; the second on run
+  mirrored a new watch against that baseline with no recapture;
+  the restart run changed nothing (still one capture line total,
+  nothing left to post). Ange's pair produced no mirror lines in
+  any phase and its stored record was verified untouched at the
+  end. The first smoke attempt (22/23) caught the env=on leak
+  into Ange's pair described in Design; the gate + regression
+  test followed, and the re-run is the 25/25 above. Smoke
+  fixtures and processes were removed afterwards.
+- Not verified here: the switch against real Stremio/Simkl
+  accounts and in Stremio Kai on TK's PC (the live-mirror env
+  gate is covered at module level by the unit tests and the
+  reconciler end-to-end by the smoke run; a full stream pick
+  through the running web server remains impractical in this VM
+  for the config-URL reason noted in earlier sections), and the
+  configure page's parked-credentials save in a real browser (the
+  merge rule is unit-tested via `resolveMirrorForSave`; the route
+  change is type-checked by the build). Applying this build
+  needs `docker compose up -d --build` — no pair re-save: TK's
+  stored baseline is adopted on the first run, and his mirror
+  sign-in is already stored.

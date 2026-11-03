@@ -125,13 +125,20 @@ that are mirrored; nothing from before is copied.
    point cannot be recorded, the save fails and Watch Together is not
    stored.
 5. To turn it off later: untick Watch Together and Save Pair again.
-   Turning it off drops the saved starting point. To start over from a
-   new moment, save once with Watch Together off, then turn it on and
-   save again; the second save records a new starting point.
+   Turning it off drops the saved starting point, but it does **not**
+   delete Ange's mirror sign-in — the sign-in stays parked on the
+   server, so turning it back on here does not need her Client Id or
+   a new approval. To start over from a new moment, save once with
+   Watch Together off, then turn it on and save again; the second
+   save records a new starting point.
 
 Re-saving the pair while Watch Together stays on — for example to
 reconnect a token — keeps the original starting point. It does not
 move forward.
+
+Day to day, though, you do not need this page to switch at all —
+use the `.env` switch in the next section but one. This page is for
+first-time setup and for reconnecting accounts.
 
 ## Watch Together — Instant Mirror
 
@@ -160,6 +167,59 @@ post).
 Ange's own watching is not affected. Her picks match her pair, which
 has no Watch Together, so nothing she watches is ever mirrored
 anywhere.
+
+## Watch Together — The Solo / Together Switch (.env)
+
+Once Watch Together is set up (Step 7), switching between watching
+together and watching solo is one line in the `.env` file next to
+`docker-compose.yml` — no configure page, no Client Id, no approval.
+
+- **Solo:** set `WATCH_TOGETHER=off`
+- **Together:** set `WATCH_TOGETHER=on`
+- Then restart so the change takes effect:
+  `docker compose up -d` (from `E:\Projects\SimklStremio`).
+
+Leaving the line out of `.env` entirely means no override: the
+Watch Together setting saved on the pair decides, exactly as
+before this switch existed. The values are `on`/`off` (or
+`true`/`false`), case-insensitive; anything else is ignored and
+the saved setting decides.
+
+**What solo means.** TK's watches stop copying to Ange — both the
+instant mirror at pick time and the reconcile runs. Everything
+else keeps working exactly as before: TK's own Simkl is still
+synced, Ange's pair still syncs her own watching to her own Simkl.
+Her mirror sign-in stays parked on the server the whole time;
+nothing about her account is touched.
+
+**Switching back on starts fresh.** When the mode changes from off
+to on, the first reconcile run after the restart records TK's
+current watched movies and episodes as a new starting point, and
+only things watched after that are mirrored. Anything watched
+while solo stays solo — it is inside the new starting point, so
+it is never copied across later. In `data\debug.log` the switch-on
+run shows one line like:
+
+`[mirror:TK] Watch Together switched on — starting point captured (0 movie(s), 509 episode(s))`
+
+While solo, each run logs
+`[mirror:TK] Watch Together off — mirror skipped (solo)` so the
+log proves the switch is in effect.
+
+**A plain restart never moves the starting point.** Restarting
+the container for any other reason — an update, a crash, the PC
+rebooting — while the switch stays on mirrors against the same
+starting point as before. Episodes watched together while the PC
+was off still mirror when it comes back. Only an actual off → on
+change of the switch (or of the saved pair setting) records a new
+starting point.
+
+One edge to know: switching on takes effect at the first
+reconcile run after the restart, which happens within seconds of
+the container starting. A pick made in the small gap before that
+first run finishes is not instant-mirrored (the reconciler still
+covers it once it is flagged watched) — this guard exists so a
+solo watch can never slip across on a stale starting point.
 
 ## Step 8 — Install The Addon In Stremio Kai
 

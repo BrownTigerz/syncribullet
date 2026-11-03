@@ -239,3 +239,68 @@ correctly.
   through it.
 - Ange's pair setup from her laptop over the LAN, and a live Watch
   Together mirror run.
+
+## Debug Logger (Added 2026-11-02)
+
+Built after a live debugging session where a test watch did not mirror
+to the Watch Together account and the existing output — one summary
+line per reconcile run on stdout, plus counts in status.json — could
+not show which decision went which way for a single item.
+
+**Files Changed**
+
+- `src/reconciler/debug-log.mjs` (new): shared writer. Appends
+  `YYYY-MM-DDTHH:mm:ss.sssZ [scope] message` lines to `debug.log` in
+  the data dir, resolved exactly like the pairs store (`DATA_DIR` env
+  override, else `./data`). Rolls to `debug.log.1` past ~5 MB. Default
+  on, `DEBUG_LOG=0` disables. Every fs operation is wrapped so a
+  logging failure can never throw into a caller; a missing or
+  read-only data dir is a silent no-op. The Qwik server imports this
+  same module, so the reconciler and the web server write one identical
+  file with one identical format.
+- `src/reconciler/reconcile.mjs`: run start/end lines; per-pair Stremio
+  fetch and extraction counts; per-item decisions from the diff
+  (`added`, `already on Simkl`); token refresh attempts and outcomes,
+  401 handling, and needsReauth decisions; run-level errors with stack.
+  Watch Together per pair: whether a baseline is present (capturedAt,
+  movie/episode counts), per-item `excluded (in baseline)`,
+  `excluded (already on mirror library)`, and `posted to mirror`
+  lines, and the needsBaseline and no-mirror-account cases. The
+  existing one-line stdout summaries are unchanged, so
+  `docker compose logs` shows the same output as before.
+- `src/reconciler/stremio.mjs`: `extractWatched` now also returns
+  `skippedItems` — raw library item id, type, and reason for every
+  skip, following the existing skipped/unresolved taxonomy
+  (non-IMDb id, unsupported type, episode-list fetch failure, no
+  episodes from Cinemeta, no watched episodes resolved).
+- `src/reconciler/simkl.mjs`: `postHistory` takes an optional
+  per-chunk callback reporting item counts and HTTP status, so each
+  `/sync/history` write is recorded.
+- `src/routes/[config]/subtitles/[...catchall]/index.tsx`: the live
+  stream-pick dispatch now logs each pick — item IMDb id (plus
+  season:episode for series), the receivers a write was attempted for,
+  and each write's outcome — plus the no-usable-ids and no-matching-
+  receiver early exits. The addon config is identified only by the
+  first 8 hex characters of its SHA-256; the raw config segment (a
+  bearer secret) is never written.
+- `src/utils/receivers/simkl/api/sync.ts`: the Simkl live write logs
+  its own result — posted with HTTP status, or failed with HTTP
+  status/error.
+
+**Design Choices**
+
+- One file, `data\debug.log`, next to `pairs.json` and `status.json`,
+  so it can be opened in Notepad and sent as-is when a watch does not
+  land. No new service, port, or dependency.
+- No secrets, by rule enforced at the call sites: no Simkl tokens, no
+  Stremio authKeys, no encrypted pair data, no addon config strings.
+  Only IMDb/item IDs, counts, HTTP status codes, pair names, and the
+  config hash marker above. (Simkl client IDs are public by design;
+  none are logged anyway.)
+- The Watch Together mirror has no live path in this fork (it is
+  reconciler-only), so `live` scope lines cover the primary receivers
+  in the addon config; mirror decisions appear under `mirror:<pair>`
+  on reconcile runs.
+- No behaviour change: sync decisions, payloads, status.json, and pair
+  storage are untouched. Applying this build needs only
+  `docker compose up -d --build` — no pair re-save, no re-setup.

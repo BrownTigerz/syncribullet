@@ -168,6 +168,30 @@ person's Step 5/6 — reconnect Simkl in the browser and Save Pair again
 with the same pair name. Nothing is lost; the next reconcile backfills
 the gap.
 
+## Debug Log
+
+The server keeps a debug log at `data\debug.log` in the project folder
+(`E:\Projects\SimklStremio\data\debug.log`). It records what the server
+actually decided, line by line:
+
+- Every reconcile run: the watched movies and episodes found in Stremio,
+  which ones were added to Simkl, which were already there, and which
+  were skipped — with the reason for each skip.
+- Watch Together: the starting-point snapshot in use, which items it
+  held back, which were already on the second account, and which were
+  posted to it.
+- Every live stream pick through the addon: the item, which accounts a
+  write was tried for, and whether Simkl accepted it.
+- Token refreshes and errors, in full.
+
+The log never contains Simkl tokens, Stremio keys, or addon links. Item
+IDs, counts, and status codes only. When it passes 5 MB it rolls over
+once to `debug.log.1` and starts fresh. It is on by default; set
+`DEBUG_LOG=0` in `.env` to turn it off.
+
+If a watch does not land where it should, send this file — it shows
+exactly where the item stopped.
+
 ## Rules Baked Into This Build
 
 - Only watched movies and episodes are written to Simkl (completed).

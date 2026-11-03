@@ -378,8 +378,19 @@ export async function reconcilePair(
     const hasMirrorAuth = !!(
       pair.mirrorSimkl?.access_token && pair.mirrorSimkl?.client_id
     );
+    // A pair is only part of the Watch Together world at all if it
+    // carries some trace of the feature: a mirror sign-in, the flag,
+    // a baseline, or a recorded applied mode. A pair with none of
+    // those (Ange's) skips this whole section in every switch state
+    // — the .env override must never invent Watch Together for a
+    // pair that was never set up for it.
+    const wtTracked =
+      hasMirrorAuth ||
+      !!pair.watchTogether ||
+      isWatchTogetherBaseline(pair.watchTogetherBaseline) ||
+      pair.watchTogetherAppliedMode !== undefined;
 
-    if (!mirrorOn) {
+    if (wtTracked && !mirrorOn) {
       if (wtOverride === false && hasMirrorAuth) {
         // The .env switch is forcing solo for a pair that has a
         // mirror configured — say so once per run, so the log proves
@@ -388,16 +399,11 @@ export async function reconcilePair(
         // did (nothing).
         dbg(mirrorScope, 'Watch Together off — mirror skipped (solo)');
       }
-      const wtTracked =
-        hasMirrorAuth ||
-        !!pair.watchTogether ||
-        isWatchTogetherBaseline(pair.watchTogetherBaseline) ||
-        pair.watchTogetherAppliedMode !== undefined;
-      if (wtTracked && pair.watchTogetherAppliedMode !== 'off') {
+      if (pair.watchTogetherAppliedMode !== 'off') {
         persistWatchTogether({ appliedMode: 'off' });
         pair.watchTogetherAppliedMode = 'off';
       }
-    } else if (!hasMirrorAuth) {
+    } else if (wtTracked && !hasMirrorAuth) {
       // Watch Together is in effect but there is no mirror account
       // to copy to — the same reports as before the switch existed.
       if (!isWatchTogetherBaseline(pair.watchTogetherBaseline)) {
@@ -420,7 +426,7 @@ export async function reconcilePair(
           'Watch Together is on but no mirror Simkl account is connected — mirroring nothing',
         );
       }
-    } else {
+    } else if (wtTracked) {
       let mirrorReady = isWatchTogetherBaseline(pair.watchTogetherBaseline);
       if (mirrorReady && pair.watchTogetherAppliedMode === undefined) {
         // Adopt: a pair saved before applied-mode tracking existed

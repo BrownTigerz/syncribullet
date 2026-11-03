@@ -1229,3 +1229,44 @@ test('starting-point capture failure mirrors nothing, flags needsBaseline, and d
     /\[mirror:TK\] Watch Together starting-point capture failed — .* — mirroring nothing \(needsBaseline\)/,
   );
 });
+
+test('WATCH_TOGETHER=on never invents Watch Together for a pair with no Watch Together setup', async (t) => {
+  // Regression guard (caught by the solo-switch smoke run): the env
+  // override applies to pairs that carry the feature. A plain pair —
+  // no flag, no mirror sign-in, no baseline, no applied mode — must
+  // stay completely untouched even with WATCH_TOGETHER=on: no
+  // needsBaseline, no captured baseline, no mirror log lines.
+  const dataDir = tempDir(t);
+  const movie = 'tt2100001';
+  const ange = {
+    name: 'Ange',
+    stremioAuthKey: 'ange-key',
+    simkl: { access_token: 'ange-token', client_id: 'ange-client' },
+    watchTogether: false,
+    mirrorSimkl: null,
+    watchTogetherBaseline: null,
+  };
+  savePairs([ange], SECRET, dataDir);
+  const angeBefore = JSON.parse(
+    JSON.stringify(loadPairs(SECRET, dataDir)[0]),
+  );
+  installReconcilerFetch(t, {
+    items: [movieItem(movie)],
+    videosByShow: {},
+    libraries: {
+      'Bearer ange-token': { movies: [], shows: [] },
+    },
+  });
+
+  const status = await runReconcilerOnce({
+    secret: SECRET,
+    dataDir,
+    log: silentLog,
+    env: { WATCH_TOGETHER: 'on' },
+  });
+
+  assert.equal(status.pairs.Ange.needsBaseline, false);
+  assert.equal(status.pairs.Ange.addedMovies, 1);
+  assert.deepEqual(loadPairs(SECRET, dataDir)[0], angeBefore);
+  assert.equal(readDebugLog(dataDir).includes('[mirror:Ange]'), false);
+});

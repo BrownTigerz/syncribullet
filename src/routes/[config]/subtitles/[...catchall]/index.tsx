@@ -1,8 +1,11 @@
 // Helpers
 // Types
+import { createHash } from 'node:crypto';
+
 import type { RequestHandler } from '@builder.io/qwik-city';
 
 // import { ALLOWED_ORIGINS, ALLOWED_REFERERS } from '~/utils/auth/stremio';
+import { writeDebugLog } from '~/reconciler/debug-log.mjs';
 import type { MetaCatchAll } from '~/utils/catchall/types/meta';
 import { decryptCompressToUserConfigBuildMinifiedStrings } from '~/utils/config/buildReceiversFromUrl';
 import { buildReceiversFromUserConfigBuildMinifiedStrings } from '~/utils/config/buildServerReceivers';
@@ -43,6 +46,13 @@ export const onGet: RequestHandler = async ({
   const redirectQuery = query.get('r');
   const redirectUrl = redirectQuery ? decodeURIComponent(redirectQuery) : null;
 
+  // Non-reversible marker for the addon config, for the debug log only.
+  // The raw config segment is a bearer secret and is never logged.
+  const configMarker = createHash('sha256')
+    .update(String(params.config))
+    .digest('hex')
+    .slice(0, 8);
+
   const config = decryptCompressToUserConfigBuildMinifiedStrings(
     params.config,
     env.get('PRIVATE_ENCRYPTION_KEY') ||
@@ -70,6 +80,10 @@ export const onGet: RequestHandler = async ({
 
   const ids = createIDsFromCatalogString(metaProgress);
   if (!Object.keys(ids.ids).length) {
+    writeDebugLog(
+      'live',
+      `stream pick ignored — no usable ids in the pick (config ${configMarker})`,
+    );
     if (redirectUrl) {
       throw redirect(302, redirectUrl);
     }
@@ -78,6 +92,10 @@ export const onGet: RequestHandler = async ({
     });
     return;
   }
+
+  const pickedItem = `${ids.ids.imdb ? String(ids.ids.imdb) : 'unknown-id'}${
+    ids.count ? ` S${ids.count.season}E${ids.count.episode}` : ''
+  }`;
 
   if (ids.ids.kitsu) {
     const kitsuAddonServerReceiver = new KitsuAddonServerReceiver();
@@ -106,8 +124,8 @@ export const onGet: RequestHandler = async ({
 
   const idTypes = Object.keys(ids.ids) as [IDSources];
 
-  const receiversAsList = Object.values(receivers)
-    .map((receiver) => {
+  const receiversAsList = Object.entries(receivers)
+    .map(([receiverName, receiver]) => {
       if (!receiver) {
         return;
       }
@@ -121,6 +139,7 @@ export const onGet: RequestHandler = async ({
       }
       // TODO: Fix this typing so it works without the assignment
       return {
+        name: receiverName,
         receiver,
         ids: ids as {
           ids: PickByArrays<IDs, (typeof receiver)['syncIds']>;
@@ -131,6 +150,10 @@ export const onGet: RequestHandler = async ({
     .filter(exists);
 
   if (receiversAsList.length <= 0) {
+    writeDebugLog(
+      'live',
+      `stream pick — no receiver matched ${pickedItem} (config ${configMarker})`,
+    );
     if (redirectUrl) {
       throw redirect(302, redirectUrl);
     }
@@ -140,8 +163,19 @@ export const onGet: RequestHandler = async ({
     return;
   }
 
+  writeDebugLog(
+    'live',
+    `stream pick — ${pickedItem} via ${potentialReceiverType} (config ${configMarker}); receivers: ${receiversAsList
+      .map((receiverEntry) => receiverEntry.name)
+      .join(', ')}`,
+  );
+
   try {
     for (const receiverEntry of receiversAsList) {
+      writeDebugLog(
+        'live',
+        `stream pick — ${receiverEntry.name} write attempted for ${pickedItem}`,
+      );
       try {
         await receiverEntry.receiver.syncMetaObject(
           receiverEntry.ids,
@@ -150,7 +184,16 @@ export const onGet: RequestHandler = async ({
           ],
           potentialReceiverType,
         );
+        writeDebugLog(
+          'live',
+          `stream pick — ${receiverEntry.name} write posted for ${pickedItem}`,
+        );
       } catch (e) {
+        const err = e as Error;
+        writeDebugLog(
+          'live',
+          `stream pick — ${receiverEntry.name} write FAILED for ${pickedItem} — ${err.message || 'unknown error'}`,
+        );
         console.error(e);
       }
     }

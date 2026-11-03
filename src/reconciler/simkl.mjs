@@ -128,27 +128,109 @@ export function simklHasEpisode(showState, season, episode) {
 }
 
 /**
+ * Simkl's /sync/history response reports what it actually marked in an
+ * `added` object ({ movies, shows, episodes } counts) — the server's
+ * own count of items affected, which can differ from what was sent
+ * (an already-watched item is sent but adds nothing). Parse it
+ * defensively: a field that is missing or not a finite, non-negative
+ * number is unknown (null), and a response with no usable counts at
+ * all yields null. Never throws.
+ */
+export function parseAddedCounts(data) {
+  const added = data?.added;
+  if (!added || typeof added !== 'object') {
+    return null;
+  }
+  const count = (value) =>
+    typeof value === 'number' && Number.isFinite(value) && value >= 0
+      ? value
+      : null;
+  const parsed = {
+    movies: count(added.movies),
+    shows: count(added.shows),
+    episodes: count(added.episodes),
+  };
+  if (
+    parsed.movies === null &&
+    parsed.shows === null &&
+    parsed.episodes === null
+  ) {
+    return null;
+  }
+  return parsed;
+}
+
+/**
+ * One-line rendering of confirmed counts for the debug log, e.g.
+ * "Simkl added 1 episode(s)" or "Simkl added 2 movie(s), 3 episode(s)".
+ * Movies and episodes are the units a reader reconciles against the
+ * sent items; the shows count (show entries touched) is not rendered.
+ * A known zero is reported when nothing was added at all, so a re-post
+ * of an already-watched item reads as confirmed-zero rather than
+ * silence. Returns null when there is nothing meaningful to report,
+ * so callers keep their existing log line unchanged.
+ */
+export function formatAddedCounts(added) {
+  if (!added) {
+    return null;
+  }
+  const counts = [];
+  if (typeof added.movies === 'number' && Number.isFinite(added.movies)) {
+    counts.push({ label: 'movie(s)', value: added.movies });
+  }
+  if (typeof added.episodes === 'number' && Number.isFinite(added.episodes)) {
+    counts.push({ label: 'episode(s)', value: added.episodes });
+  }
+  if (counts.length === 0) {
+    return null;
+  }
+  const positive = counts.filter((entry) => entry.value > 0);
+  const shown = positive.length > 0 ? positive : counts;
+  return `Simkl added ${shown
+    .map((entry) => `${entry.value} ${entry.label}`)
+    .join(', ')}`;
+}
+
+/**
  * POST /sync/history with { movies, shows } in the same shape the stock
  * importer builds. Chunked so a large first run stays in modest requests.
  * The optional onPost callback fires after each chunk with
- * { movies, shows, status } (item counts in the chunk + HTTP status) so
- * callers can record the write in the debug log.
+ * { movies, shows, status, added } (item counts in the chunk, HTTP
+ * status, and Simkl's confirmed `added` counts for that chunk — see
+ * parseAddedCounts; null when the response carried none) so callers
+ * can record the write in the debug log.
  */
 export async function postHistory(auth, payload, onPost) {
   const results = { movies: 0, shows: 0 };
   const movieChunks = chunk(payload.movies, 100);
   const showChunks = chunk(payload.shows, 50);
   for (const movies of movieChunks) {
-    const { status } = await postHistoryChunk(auth, { movies, shows: [] });
+    const { data, status } = await postHistoryChunk(auth, {
+      movies,
+      shows: [],
+    });
     if (onPost) {
-      onPost({ movies: movies.length, shows: 0, status });
+      onPost({
+        movies: movies.length,
+        shows: 0,
+        status,
+        added: parseAddedCounts(data),
+      });
     }
     results.movies += movies.length;
   }
   for (const shows of showChunks) {
-    const { status } = await postHistoryChunk(auth, { movies: [], shows });
+    const { data, status } = await postHistoryChunk(auth, {
+      movies: [],
+      shows,
+    });
     if (onPost) {
-      onPost({ movies: 0, shows: shows.length, status });
+      onPost({
+        movies: 0,
+        shows: shows.length,
+        status,
+        added: parseAddedCounts(data),
+      });
     }
     results.shows += shows.length;
   }

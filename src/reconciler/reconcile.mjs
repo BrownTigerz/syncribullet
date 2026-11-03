@@ -30,6 +30,7 @@ import {
 } from './pairs-store.mjs';
 import {
   fetchSimklLibrary,
+  formatAddedCounts,
   postHistory,
   refreshSimklAuth,
   simklHasEpisode,
@@ -133,9 +134,10 @@ async function attemptSync(auth, watched, { dbg, scope, mirror = false } = {}) {
   try {
     await postHistory(auth, payload, (info) => {
       if (dbg) {
+        const confirmed = formatAddedCounts(info.added);
         dbg(
           scope,
-          `POST /sync/history — ${info.movies} movie(s), ${info.shows} show(s) → HTTP ${info.status}`,
+          `POST /sync/history — ${info.movies} movie(s), ${info.shows} show(s) → HTTP ${info.status}${confirmed ? ` — ${confirmed}` : ''}`,
         );
       }
     });

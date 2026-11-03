@@ -1,5 +1,9 @@
 import { writeDebugLog } from '~/reconciler/debug-log.mjs';
 import { mirrorLivePick } from '~/reconciler/live-mirror.mjs';
+import {
+  formatAddedCounts,
+  parseAddedCounts,
+} from '~/reconciler/simkl.mjs';
 import { axiosInstance } from '~/utils/axios/cache';
 import type { IDs } from '~/utils/receiver/types/id';
 
@@ -62,9 +66,12 @@ export async function syncSimklMetaObject(
       headers: createSimklHeaders(userConfig.auth),
       data,
     });
+    // Simkl's response reports what it actually marked (`added`
+    // counts); surface them in the log line when present, counts only.
+    const confirmed = formatAddedCounts(parseAddedCounts(response.data));
     writeDebugLog(
       'live',
-      `stream pick — Simkl write posted for ${liveItemLabel(ids)} (HTTP ${response.status})`,
+      `stream pick — Simkl write posted for ${liveItemLabel(ids)} (HTTP ${response.status})${confirmed ? ` — ${confirmed}` : ''}`,
     );
     // Instant Watch Together mirror: if this pick's Simkl account is a
     // saved pair with Watch Together on, the same item is also posted

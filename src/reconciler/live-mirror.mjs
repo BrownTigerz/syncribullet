@@ -37,7 +37,11 @@
 
 import { writeDebugLog } from './debug-log.mjs';
 import { getDataDir, loadPairs, updatePairAuth } from './pairs-store.mjs';
-import { postHistory, refreshSimklAuth } from './simkl.mjs';
+import {
+  formatAddedCounts,
+  postHistory,
+  refreshSimklAuth,
+} from './simkl.mjs';
 import { HttpError } from './stremio.mjs';
 import { isWatchTogetherBaseline } from './watch-together-baseline.mjs';
 
@@ -203,8 +207,12 @@ export async function mirrorLivePick({
 
     const payload = buildMirrorPayload(item);
     let status = null;
+    let added = null;
     const onPost = (info) => {
       status = info.status;
+      if (info.added) {
+        added = info.added;
+      }
     };
     try {
       await postHistoryFn(auth, payload, onPost);
@@ -238,7 +246,10 @@ export async function mirrorLivePick({
       }
     }
 
-    dbg(`mirror posted ${label}${status ? ` (HTTP ${status})` : ''}`);
+    const confirmed = formatAddedCounts(added);
+    dbg(
+      `mirror posted ${label}${status ? ` (HTTP ${status})` : ''}${confirmed ? ` — ${confirmed}` : ''}`,
+    );
     return { action: 'posted', pair };
   } catch (e) {
     // The mirror must never break the caller — log and swallow.

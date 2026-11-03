@@ -130,17 +130,26 @@ export function simklHasEpisode(showState, season, episode) {
 /**
  * POST /sync/history with { movies, shows } in the same shape the stock
  * importer builds. Chunked so a large first run stays in modest requests.
+ * The optional onPost callback fires after each chunk with
+ * { movies, shows, status } (item counts in the chunk + HTTP status) so
+ * callers can record the write in the debug log.
  */
-export async function postHistory(auth, payload) {
+export async function postHistory(auth, payload, onPost) {
   const results = { movies: 0, shows: 0 };
   const movieChunks = chunk(payload.movies, 100);
   const showChunks = chunk(payload.shows, 50);
   for (const movies of movieChunks) {
-    await postHistoryChunk(auth, { movies, shows: [] });
+    const { status } = await postHistoryChunk(auth, { movies, shows: [] });
+    if (onPost) {
+      onPost({ movies: movies.length, shows: 0, status });
+    }
     results.movies += movies.length;
   }
   for (const shows of showChunks) {
-    await postHistoryChunk(auth, { movies: [], shows });
+    const { status } = await postHistoryChunk(auth, { movies: [], shows });
+    if (onPost) {
+      onPost({ movies: 0, shows: shows.length, status });
+    }
     results.shows += shows.length;
   }
   return results;
@@ -153,7 +162,8 @@ async function postHistoryChunk(auth, body) {
     body: JSON.stringify(body),
   });
   await throwOnError(response, 'POST /sync/history');
-  return response.json().catch(() => ({}));
+  const data = await response.json().catch(() => ({}));
+  return { data, status: response.status };
 }
 
 function chunk(array, size) {

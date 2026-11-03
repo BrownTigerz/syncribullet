@@ -79,6 +79,8 @@ const IMDB_ID = /^tt\d+$/;
  *   unresolved: number  // skipped items that might resolve on a later run
  *                       // (out-of-scope non-IMDb items are skipped, not
  *                       // unresolved — they can never enter the diff)
+ *   skippedItems: [{ id, type, reason, unresolved }]  // per-item detail
+ *                       // for every skipped item, for the debug log
  * }
  *
  * Episodes come from the Cinemeta watched bitfield whenever Stremio
@@ -93,6 +95,19 @@ export async function extractWatched(libraryItems, log = console) {
   const shows = new Map();
   let skipped = 0;
   let unresolved = 0;
+  const skippedItems = [];
+  const noteSkipped = (item, reason, isUnresolved) => {
+    skipped++;
+    if (isUnresolved) {
+      unresolved++;
+    }
+    skippedItems.push({
+      id: item?._id ?? null,
+      type: item?.type ?? null,
+      reason,
+      unresolved: !!isUnresolved,
+    });
+  };
 
   for (const item of libraryItems) {
     if (!item || item.removed) {
@@ -105,7 +120,7 @@ export async function extractWatched(libraryItems, log = console) {
     }
     const showOrMovieId = String(item._id || '').split(':')[0];
     if (!IMDB_ID.test(showOrMovieId)) {
-      skipped++;
+      noteSkipped(item, `non-IMDb id "${showOrMovieId}"`, false);
       continue;
     }
 
@@ -115,7 +130,7 @@ export async function extractWatched(libraryItems, log = console) {
     }
 
     if (item.type !== 'series') {
-      skipped++;
+      noteSkipped(item, `unsupported type "${item.type}"`, false);
       continue;
     }
 
@@ -126,13 +141,15 @@ export async function extractWatched(libraryItems, log = console) {
       log.warn(
         `[reconciler] Could not load episode list for ${showOrMovieId} (${item.name}): ${e.message}. Skipping this run; it will be retried.`,
       );
-      skipped++;
-      unresolved++;
+      noteSkipped(
+        item,
+        `episode list fetch failed: ${e.message}`,
+        true,
+      );
       continue;
     }
     if (videos.length === 0) {
-      skipped++;
-      unresolved++;
+      noteSkipped(item, 'Cinemeta returned no episodes for this series', true);
       continue;
     }
 
@@ -176,12 +193,11 @@ export async function extractWatched(libraryItems, log = console) {
     }
 
     if (episodes.size === 0) {
-      skipped++;
-      unresolved++;
+      noteSkipped(item, 'no watched episodes resolved', true);
       continue;
     }
     shows.set(showOrMovieId, { title: item.name, episodes });
   }
 
-  return { movies, shows, skipped, unresolved };
+  return { movies, shows, skipped, unresolved, skippedItems };
 }

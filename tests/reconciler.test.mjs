@@ -18,8 +18,12 @@ import {
   reconcilePair,
   runReconcilerOnce,
 } from '../src/reconciler/reconcile.mjs';
+import { debugLogPath } from '../src/reconciler/debug-log.mjs';
 import {
+  formatAddedCounts,
+  parseAddedCounts,
   parseSimklLibrary,
+  postHistory,
   simklHasEpisode,
 } from '../src/reconciler/simkl.mjs';
 import { extractWatched } from '../src/reconciler/stremio.mjs';
@@ -112,7 +116,10 @@ function baseline(movies = [], shows = {}) {
   };
 }
 
-function installReconcilerFetch(t, { items, videosByShow, libraries }) {
+function installReconcilerFetch(
+  t,
+  { items, videosByShow, libraries, historyAdded },
+) {
   const calls = { posts: [], simklGets: [] };
   installFetch(t, async (url, options = {}) => {
     const href = String(url);
@@ -131,11 +138,15 @@ function installReconcilerFetch(t, { items, videosByShow, libraries }) {
       return jsonResponse(libraries[auth] || { movies: [], shows: [] });
     }
     if (href === 'https://api.simkl.com/sync/history/') {
+      const body = JSON.parse(options.body);
       calls.posts.push({
         auth: options.headers?.Authorization,
-        body: JSON.parse(options.body),
+        body,
       });
-      return jsonResponse({});
+      const added = historyAdded
+        ? historyAdded(body, options.headers?.Authorization)
+        : undefined;
+      return jsonResponse(added ? { added } : {});
     }
     throw new Error(`Unexpected fetch in test: ${href}`);
   });
@@ -543,4 +554,190 @@ test("the pair's own full-diff reconcile still posts pre-baseline items to its o
     movies: new Set([newMovie]),
     episodes: new Set([`${show}:1:2`]),
   });
+});
+
+function readDebugLog(dataDir) {
+  const file = debugLogPath(dataDir);
+  return existsSync(file) ? readFileSync(file, 'utf8') : '';
+}
+
+test('confirmed added counts parse defensively and render for the log', () => {
+  assert.deepEqual(
+    parseAddedCounts({ added: { movies: 2, shows: 1, episodes: 3 } }),
+    { movies: 2, shows: 1, episodes: 3 },
+  );
+  // Missing `added`, non-object `added`, and unusable fields all
+  // degrade to null (or null fields) instead of throwing.
+  assert.equal(parseAddedCounts({}), null);
+  assert.equal(parseAddedCounts(null), null);
+  assert.equal(parseAddedCounts({ added: 'nope' }), null);
+  assert.equal(
+    parseAddedCounts({ added: { movies: 'two', episodes: -1 } }),
+    null,
+  );
+  assert.deepEqual(
+    parseAddedCounts({ added: { movies: 1, episodes: 'many' } }),
+    { movies: 1, shows: null, episodes: null },
+  );
+
+  assert.equal(
+    formatAddedCounts({ movies: 0, shows: 1, episodes: 1 }),
+    'Simkl added 1 episode(s)',
+  );
+  assert.equal(
+    formatAddedCounts({ movies: 2, shows: 0, episodes: 3 }),
+    'Simkl added 2 movie(s), 3 episode(s)',
+  );
+  assert.equal(
+    formatAddedCounts({ movies: 1, shows: null, episodes: null }),
+    'Simkl added 1 movie(s)',
+  );
+  assert.equal(
+    formatAddedCounts({ movies: 0, shows: 1, episodes: 0 }),
+    'Simkl added 0 movie(s), 0 episode(s)',
+  );
+  assert.equal(formatAddedCounts({ shows: 2 }), null);
+  assert.equal(formatAddedCounts(null), null);
+});
+
+test('postHistory passes per-chunk confirmed added counts to onPost', async (t) => {
+  let withAdded = true;
+  installFetch(t, async (url, options = {}) => {
+    assert.equal(String(url), 'https://api.simkl.com/sync/history/');
+    if (!withAdded) {
+      return jsonResponse({}, 201);
+    }
+    const body = JSON.parse(options.body);
+    if (body.movies.length > 0) {
+      return jsonResponse({ added: { movies: 1, shows: 0, episodes: 0 } }, 201);
+    }
+    if (body.shows.length > 0) {
+      return jsonResponse({ added: { movies: 0, shows: 1, episodes: 2 } }, 201);
+    }
+    return jsonResponse({}, 201);
+  });
+
+  const infos = [];
+  await postHistory(
+    { access_token: 'token', client_id: 'client' },
+    {
+      movies: [{ ids: { imdb: 'tt1100001' } }],
+      shows: [{ ids: { imdb: 'tt1100010' }, seasons: [] }],
+    },
+    (info) => infos.push(info),
+  );
+  assert.deepEqual(infos, [
+    {
+      movies: 1,
+      shows: 0,
+      status: 201,
+      added: { movies: 1, shows: 0, episodes: 0 },
+    },
+    {
+      movies: 0,
+      shows: 1,
+      status: 201,
+      added: { movies: 0, shows: 1, episodes: 2 },
+    },
+  ]);
+
+  // A response with no `added` object surfaces added: null, no throw.
+  withAdded = false;
+  const bareInfos = [];
+  await postHistory(
+    { access_token: 'token', client_id: 'client' },
+    { movies: [], shows: [{ ids: { imdb: 'tt1100010' }, seasons: [] }] },
+    (info) => bareInfos.push(info),
+  );
+  assert.deepEqual(bareInfos, [
+    { movies: 0, shows: 1, status: 201, added: null },
+  ]);
+});
+
+test("reconciler log lines carry Simkl's confirmed added counts", async (t) => {
+  const dataDir = tempDir(t);
+  const movie = 'tt1100001';
+  const show = 'tt1100010';
+  installReconcilerFetch(t, {
+    items: [movieItem(movie), seriesItem(show, 1, 2)],
+    videosByShow: { [show]: seriesVideos(show, [1, 2, 3]) },
+    libraries: {
+      'Bearer primary-token': { movies: [], shows: [] },
+      'Bearer mirror-token': { movies: [], shows: [] },
+    },
+    historyAdded: (body, auth) => {
+      if (body.movies.length > 0) {
+        return { movies: 1, shows: 0, episodes: 0 };
+      }
+      // The pair posts both missing episodes; the mirror only the one
+      // past its baseline (S1E1 is in the baseline).
+      return auth === 'Bearer mirror-token'
+        ? { movies: 0, shows: 1, episodes: 1 }
+        : { movies: 0, shows: 1, episodes: 2 };
+    },
+  });
+  const pair = makePair({
+    watchTogetherBaseline: baseline([], { [show]: ['1:1'] }),
+  });
+
+  const entry = await reconcilePair(pair, {
+    secret: SECRET,
+    dataDir,
+    log: silentLog,
+  });
+
+  assert.equal(entry.addedMovies, 1);
+  assert.equal(entry.addedEpisodes, 2);
+  assert.equal(entry.mirrorAddedMovies, 1);
+  assert.equal(entry.mirrorAddedEpisodes, 1);
+  const logText = readDebugLog(dataDir);
+  assert.match(
+    logText,
+    /\[pair:TK\] POST \/sync\/history — 1 movie\(s\), 0 show\(s\) → HTTP 200 — Simkl added 1 movie\(s\)/,
+  );
+  assert.match(
+    logText,
+    /\[pair:TK\] POST \/sync\/history — 0 movie\(s\), 1 show\(s\) → HTTP 200 — Simkl added 2 episode\(s\)/,
+  );
+  assert.match(
+    logText,
+    /\[mirror:TK\] POST \/sync\/history — 1 movie\(s\), 0 show\(s\) → HTTP 200 — Simkl added 1 movie\(s\)/,
+  );
+  assert.match(
+    logText,
+    /\[mirror:TK\] POST \/sync\/history — 0 movie\(s\), 1 show\(s\) → HTTP 200 — Simkl added 1 episode\(s\)/,
+  );
+});
+
+test('reconciler log lines stay unchanged when Simkl reports no added counts', async (t) => {
+  const dataDir = tempDir(t);
+  const movie = 'tt1200001';
+  installReconcilerFetch(t, {
+    items: [movieItem(movie)],
+    videosByShow: {},
+    libraries: {
+      'Bearer primary-token': { movies: [], shows: [] },
+      'Bearer mirror-token': { movies: [simklMovie(movie)], shows: [] },
+    },
+    // No historyAdded: history responses are bare {} like Simkl
+    // responses without an `added` object.
+  });
+  const pair = makePair({
+    watchTogetherBaseline: baseline([movie]),
+  });
+
+  const entry = await reconcilePair(pair, {
+    secret: SECRET,
+    dataDir,
+    log: silentLog,
+  });
+
+  assert.equal(entry.addedMovies, 1);
+  assert.equal(entry.mirrorAddedMovies, 0);
+  const logText = readDebugLog(dataDir);
+  assert.match(
+    logText,
+    /\[pair:TK\] POST \/sync\/history — 1 movie\(s\), 0 show\(s\) → HTTP 200\n/,
+  );
+  assert.equal(logText.includes('Simkl added'), false);
 });

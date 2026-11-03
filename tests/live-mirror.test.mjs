@@ -403,3 +403,75 @@ test('DEBUG_LOG=0 silences the instant mirror lines too', async (t) => {
   assert.equal(result.action, 'excluded');
   assert.equal(existsSync(debugLogPath(options.dataDir)), false);
 });
+
+test("mirror posted line carries Simkl's confirmed added counts", async (t) => {
+  const options = baseOptions(t, {
+    postHistoryFn: async (auth, payload, onPost) => {
+      if (onPost) {
+        onPost({
+          movies: payload.movies.length,
+          shows: payload.shows.length,
+          status: 201,
+          added: { movies: 0, shows: 1, episodes: 1 },
+        });
+      }
+      return { movies: payload.movies.length, shows: payload.shows.length };
+    },
+  });
+  const result = await mirrorLivePick({
+    ...options,
+    clientId: 'tk-client',
+    item: { imdb: 'tt1000010', season: 1, episode: 3 },
+  });
+  assert.equal(result.action, 'posted');
+  assert.match(
+    readDebugLog(options.dataDir),
+    /\[live\] mirror posted tt1000010 S1E3 \(HTTP 201\) — Simkl added 1 episode\(s\)/,
+  );
+});
+
+test('mirror posted line is unchanged when Simkl reports no added counts', async (t) => {
+  const calls = [];
+  const options = baseOptions(t, {
+    // recordingPostHistory's onPost carries no `added`, like a
+    // /sync/history response without an `added` object.
+    postHistoryFn: recordingPostHistory(calls),
+  });
+  const result = await mirrorLivePick({
+    ...options,
+    clientId: 'tk-client',
+    item: { imdb: 'tt1000002' },
+  });
+  assert.equal(result.action, 'posted');
+  const logText = readDebugLog(options.dataDir);
+  assert.match(logText, /\[live\] mirror posted tt1000002 \(HTTP 201\)\n/);
+  assert.equal(logText.includes('Simkl added'), false);
+});
+
+test('end to end: real postHistory surfaces confirmed counts in the log', async (t) => {
+  const dataDir = tempDir(t);
+  savePairs([tkPair(), angePair()], SECRET, dataDir);
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({ added: { movies: 1, shows: 0, episodes: 0 } }),
+      { status: 201, headers: { 'Content-Type': 'application/json' } },
+    );
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const result = await mirrorLivePick({
+    clientId: 'tk-client',
+    item: { imdb: 'tt1000002' },
+    secret: SECRET,
+    dataDir,
+  });
+
+  assert.equal(result.action, 'posted');
+  assert.match(
+    readDebugLog(dataDir),
+    /\[live\] mirror posted tt1000002 \(HTTP 201\) — Simkl added 1 movie\(s\)/,
+  );
+});

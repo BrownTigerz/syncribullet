@@ -10,8 +10,10 @@ import { WatchedBitField } from '../src/reconciler/bitfield.mjs';
 import {
   loadPairs,
   pairsFilePath,
+  resolveMirrorForSave,
   savePairs,
   updatePairAuth,
+  updatePairWatchTogether,
   upsertPair,
 } from '../src/reconciler/pairs-store.mjs';
 import {
@@ -31,6 +33,9 @@ import {
   WatchTogetherBaselineError,
   captureWatchTogetherBaseline,
   createWatchTogetherBaseline,
+  effectiveWatchTogether,
+  isWatchTogetherBaseline,
+  parseWatchTogetherOverride,
   resolveWatchTogetherBaseline,
   subtractWatchTogetherBaseline,
 } from '../src/reconciler/watch-together-baseline.mjs';
@@ -485,7 +490,14 @@ test('mirror copies an item watched after the baseline when the mirror is missin
   });
 });
 
-test('Watch Together without a baseline mirrors nothing and flags needsBaseline', async (t) => {
+test('Watch Together without a baseline captures a starting point and mirrors nothing beyond it', async (t) => {
+  // Changed with the .env solo/together switch: under the transition
+  // rules, a Watch Together pair with mirror credentials but no
+  // valid baseline no longer sits at needsBaseline until a page
+  // re-save — the reconciler captures the current watched set as the
+  // starting point (the applied-mode capture path), then mirrors
+  // nothing beyond it. Capture FAILURE still flags needsBaseline;
+  // that case has its own test below.
   const dataDir = tempDir(t);
   const movie = 'tt8000001';
   const show = 'tt8000010';
@@ -505,16 +517,24 @@ test('Watch Together without a baseline mirrors nothing and flags needsBaseline'
     log: silentLog,
   });
 
-  assert.equal(entry.needsBaseline, true);
+  assert.equal(entry.needsBaseline, false);
   assert.equal(entry.mirrorAddedMovies, 0);
   assert.equal(entry.mirrorAddedEpisodes, 0);
-  assert.equal(calls.simklGets.includes('Bearer mirror-token'), false);
   assert.deepEqual(postedItems(calls, 'Bearer mirror-token'), {
     movies: new Set(),
     episodes: new Set(),
   });
-  // The pair's own full-diff reconcile still runs in the same test below;
-  // this assertion keeps the no-baseline case explicit about the mirror.
+  // The capture stored the whole current watched set as the starting
+  // point, and the run applied the on mode.
+  assert.equal(isWatchTogetherBaseline(pair.watchTogetherBaseline), true);
+  assert.deepEqual(pair.watchTogetherBaseline.movies, [movie]);
+  assert.deepEqual(pair.watchTogetherBaseline.shows, { [show]: ['1:1'] });
+  assert.equal(pair.watchTogetherAppliedMode, 'on');
+  assert.match(
+    readDebugLog(dataDir),
+    /\[mirror:TK\] Watch Together switched on — starting point captured \(1 movie\(s\), 1 episode\(s\)\)/,
+  );
+  // The pair's own full-diff reconcile is unaffected by the capture.
   assert.deepEqual(postedItems(calls, 'Bearer primary-token').movies, new Set([movie]));
 });
 
@@ -740,4 +760,472 @@ test('reconciler log lines stay unchanged when Simkl reports no added counts', a
     /\[pair:TK\] POST \/sync\/history — 1 movie\(s\), 0 show\(s\) → HTTP 200\n/,
   );
   assert.equal(logText.includes('Simkl added'), false);
+});
+
+// --- .env solo/together switch (WATCH_TOGETHER) ----------------------
+
+test('WATCH_TOGETHER override parses on/off/true/false only', () => {
+  assert.equal(parseWatchTogetherOverride('on'), true);
+  assert.equal(parseWatchTogetherOverride('ON'), true);
+  assert.equal(parseWatchTogetherOverride(' true '), true);
+  assert.equal(parseWatchTogetherOverride('off'), false);
+  assert.equal(parseWatchTogetherOverride('False'), false);
+  // Unset, empty, misspelled, or non-string values are NO override —
+  // the pair's stored flag decides, never a guess.
+  assert.equal(parseWatchTogetherOverride(''), null);
+  assert.equal(parseWatchTogetherOverride(undefined), null);
+  assert.equal(parseWatchTogetherOverride(null), null);
+  assert.equal(parseWatchTogetherOverride('banana'), null);
+  assert.equal(parseWatchTogetherOverride('1'), null);
+  assert.equal(parseWatchTogetherOverride(true), null);
+
+  const onPair = { watchTogether: true };
+  const offPair = { watchTogether: false };
+  assert.equal(effectiveWatchTogether(onPair, {}), true);
+  assert.equal(effectiveWatchTogether(offPair, {}), false);
+  assert.equal(
+    effectiveWatchTogether(onPair, { WATCH_TOGETHER: 'off' }),
+    false,
+  );
+  assert.equal(
+    effectiveWatchTogether(offPair, { WATCH_TOGETHER: 'on' }),
+    true,
+  );
+  assert.equal(
+    effectiveWatchTogether(onPair, { WATCH_TOGETHER: 'banana' }),
+    true,
+  );
+  assert.equal(effectiveWatchTogether(null, {}), false);
+});
+
+test('updatePairWatchTogether touches only the Watch Together fields', (t) => {
+  const dataDir = tempDir(t);
+  const pair = makePair();
+  savePairs([pair], SECRET, dataDir);
+
+  assert.equal(
+    updatePairWatchTogether(
+      'TK',
+      { appliedMode: 'off' },
+      SECRET,
+      dataDir,
+    ),
+    true,
+  );
+  let stored = loadPairs(SECRET, dataDir)[0];
+  assert.equal(stored.watchTogetherAppliedMode, 'off');
+  assert.equal(stored.watchTogetherBaseline, undefined);
+
+  const fresh = baseline(['tt1300001']);
+  assert.equal(
+    updatePairWatchTogether(
+      'TK',
+      { baseline: fresh, appliedMode: 'on' },
+      SECRET,
+      dataDir,
+    ),
+    true,
+  );
+  stored = loadPairs(SECRET, dataDir)[0];
+  assert.deepEqual(stored.watchTogetherBaseline, fresh);
+  assert.equal(stored.watchTogetherAppliedMode, 'on');
+  // Auth material is untouched by the Watch Together update.
+  assert.equal(stored.simkl.access_token, 'primary-token');
+  assert.equal(stored.mirrorSimkl.access_token, 'mirror-token');
+
+  assert.equal(
+    updatePairWatchTogether('Nobody', { appliedMode: 'on' }, SECRET, dataDir),
+    false,
+  );
+});
+
+test('resolveMirrorForSave prefers fresh credentials and parks stored ones', () => {
+  const stored = {
+    access_token: 'stored-token',
+    client_id: 'stored-client',
+    refresh_token: 'stored-refresh',
+    expires_at: 123,
+  };
+  const existing = { name: 'TK', mirrorSimkl: stored };
+  const fresh = {
+    access_token: 'fresh-token',
+    client_id: 'fresh-client',
+  };
+
+  assert.deepEqual(resolveMirrorForSave(fresh, existing), {
+    access_token: 'fresh-token',
+    client_id: 'fresh-client',
+    refresh_token: undefined,
+    expires_at: undefined,
+  });
+  // No fresh approval in this save -> the stored sign-in is parked,
+  // not discarded.
+  assert.equal(resolveMirrorForSave(null, existing), stored);
+  assert.equal(resolveMirrorForSave(undefined, existing), stored);
+  // A partial supplied value (no client_id) is not a usable sign-in.
+  assert.equal(
+    resolveMirrorForSave({ access_token: 'half' }, existing),
+    stored,
+  );
+  assert.equal(resolveMirrorForSave(null, { name: 'TK' }), null);
+  assert.equal(resolveMirrorForSave(null, undefined), null);
+});
+
+// Reconciler fetch stub whose datastore contents can change between
+// runs inside one test (the fixed-shape installer above cannot).
+function installDynamicReconcilerFetch(t, state) {
+  const calls = { posts: [], simklGets: [] };
+  installFetch(t, async (url, options = {}) => {
+    const href = String(url);
+    if (href === 'https://api.strem.io/api/datastoreGet') {
+      return jsonResponse({ result: state.items });
+    }
+    if (href.startsWith('https://v3-cinemeta.strem.io/meta/series/')) {
+      const imdb = decodeURIComponent(
+        href.split('/').pop().replace(/\.json$/, ''),
+      );
+      return jsonResponse({ meta: { videos: state.videosByShow[imdb] || [] } });
+    }
+    if (href.startsWith('https://api.simkl.com/sync/all-items/')) {
+      const auth = options.headers?.Authorization;
+      calls.simklGets.push(auth);
+      return jsonResponse(state.libraries[auth] || { movies: [], shows: [] });
+    }
+    if (href === 'https://api.simkl.com/sync/history/') {
+      calls.posts.push({
+        auth: options.headers?.Authorization,
+        body: JSON.parse(options.body),
+      });
+      return jsonResponse({});
+    }
+    throw new Error(`Unexpected fetch in test: ${href}`);
+  });
+  return calls;
+}
+
+test('switch-on captures a fresh starting point exactly once across consecutive runs', async (t) => {
+  const dataDir = tempDir(t);
+  const oldMovie = 'tt1400001';
+  const soloMovie = 'tt1400002';
+  const laterMovie = 'tt1400003';
+  const show = 'tt1400010';
+  // The pair comes back from a solo period: applied mode off, and a
+  // starting point from BEFORE the solo watches.
+  savePairs(
+    [
+      makePair({
+        watchTogetherAppliedMode: 'off',
+        watchTogetherBaseline: baseline([oldMovie], { [show]: ['1:1'] }),
+      }),
+    ],
+    SECRET,
+    dataDir,
+  );
+  const state = {
+    items: [
+      movieItem(oldMovie),
+      movieItem(soloMovie),
+      seriesItem(show, 1, 2),
+    ],
+    videosByShow: { [show]: seriesVideos(show, [1, 2, 3]) },
+    libraries: {
+      'Bearer primary-token': {
+        movies: [simklMovie(oldMovie), simklMovie(soloMovie)],
+        shows: [simklShow(show, [1, 2])],
+      },
+      'Bearer mirror-token': { movies: [], shows: [] },
+    },
+  };
+  const calls = installDynamicReconcilerFetch(t, state);
+
+  // Run 1: the switch is applied — a fresh starting point is
+  // captured and NOTHING is mirrored, including soloMovie and S1E2,
+  // which the stale pre-solo baseline would have let through.
+  const run1 = await reconcilePair(loadPairs(SECRET, dataDir)[0], {
+    secret: SECRET,
+    dataDir,
+    log: silentLog,
+  });
+  assert.equal(run1.needsBaseline, false);
+  assert.equal(run1.mirrorAddedMovies, 0);
+  assert.equal(run1.mirrorAddedEpisodes, 0);
+  assert.deepEqual(postedItems(calls, 'Bearer mirror-token'), {
+    movies: new Set(),
+    episodes: new Set(),
+  });
+  let stored = loadPairs(SECRET, dataDir)[0];
+  assert.equal(stored.watchTogetherAppliedMode, 'on');
+  assert.deepEqual(stored.watchTogetherBaseline.movies, [
+    oldMovie,
+    soloMovie,
+  ]);
+  assert.deepEqual(stored.watchTogetherBaseline.shows, {
+    [show]: ['1:1', '1:2'],
+  });
+  const capturedAt = stored.watchTogetherBaseline.capturedAt;
+  assert.notEqual(capturedAt, '2026-11-01T12:00:00.000Z');
+
+  // Run 2 (next scheduled run / restart): no recapture — the new
+  // starting point stands, and a watch after it mirrors normally.
+  state.items = [...state.items, movieItem(laterMovie)];
+  state.libraries['Bearer primary-token'].movies.push(
+    simklMovie(laterMovie),
+  );
+  const run2 = await reconcilePair(loadPairs(SECRET, dataDir)[0], {
+    secret: SECRET,
+    dataDir,
+    log: silentLog,
+  });
+  assert.equal(run2.mirrorAddedMovies, 1);
+  assert.deepEqual(postedItems(calls, 'Bearer mirror-token').movies, new Set([laterMovie]));
+  stored = loadPairs(SECRET, dataDir)[0];
+  assert.equal(stored.watchTogetherBaseline.capturedAt, capturedAt);
+  const captureLines = readDebugLog(dataDir)
+    .split('\n')
+    .filter((line) => line.includes('starting point captured'));
+  assert.equal(captureLines.length, 1);
+  assert.match(
+    captureLines[0],
+    /\[mirror:TK\] Watch Together switched on — starting point captured \(2 movie\(s\), 2 episode\(s\)\)/,
+  );
+});
+
+test('plain restart with the mode already applied mirrors against the stored baseline, no recapture', async (t) => {
+  const dataDir = tempDir(t);
+  const oldMovie = 'tt1500001';
+  const newMovie = 'tt1500002';
+  const show = 'tt1500010';
+  const storedBaseline = baseline([oldMovie], { [show]: ['1:1'] });
+  savePairs(
+    [
+      makePair({
+        watchTogetherAppliedMode: 'on',
+        watchTogetherBaseline: storedBaseline,
+      }),
+    ],
+    SECRET,
+    dataDir,
+  );
+  const calls = installReconcilerFetch(t, {
+    items: [movieItem(oldMovie), movieItem(newMovie), seriesItem(show, 1, 2)],
+    videosByShow: { [show]: seriesVideos(show, [1, 2, 3]) },
+    libraries: {
+      'Bearer primary-token': {
+        movies: [simklMovie(oldMovie), simklMovie(newMovie)],
+        shows: [simklShow(show, [1, 2])],
+      },
+      'Bearer mirror-token': { movies: [], shows: [] },
+    },
+  });
+
+  const entry = await reconcilePair(loadPairs(SECRET, dataDir)[0], {
+    secret: SECRET,
+    dataDir,
+    log: silentLog,
+  });
+
+  assert.equal(entry.mirrorAddedMovies, 1);
+  assert.equal(entry.mirrorAddedEpisodes, 1);
+  assert.deepEqual(postedItems(calls, 'Bearer mirror-token'), {
+    movies: new Set([newMovie]),
+    episodes: new Set([`${show}:1:2`]),
+  });
+  const stored = loadPairs(SECRET, dataDir)[0];
+  assert.equal(
+    stored.watchTogetherBaseline.capturedAt,
+    storedBaseline.capturedAt,
+  );
+  assert.equal(
+    readDebugLog(dataDir).includes('starting point captured'),
+    false,
+  );
+});
+
+test('an existing valid baseline is adopted when the applied mode was never recorded', async (t) => {
+  // TK's live pair on deploy day: saved by the configure page before
+  // applied-mode tracking existed — flag on, baseline valid, no
+  // watchTogetherAppliedMode field. The first run of the new build
+  // must adopt the stored baseline, not recapture it.
+  const dataDir = tempDir(t);
+  const oldMovie = 'tt1600001';
+  const newMovie = 'tt1600002';
+  const storedBaseline = baseline([oldMovie]);
+  const pair = makePair({ watchTogetherBaseline: storedBaseline });
+  delete pair.watchTogetherAppliedMode;
+  savePairs([pair], SECRET, dataDir);
+  installReconcilerFetch(t, {
+    items: [movieItem(oldMovie), movieItem(newMovie)],
+    videosByShow: {},
+    libraries: {
+      'Bearer primary-token': {
+        movies: [simklMovie(oldMovie), simklMovie(newMovie)],
+        shows: [],
+      },
+      'Bearer mirror-token': { movies: [], shows: [] },
+    },
+  });
+
+  const entry = await reconcilePair(loadPairs(SECRET, dataDir)[0], {
+    secret: SECRET,
+    dataDir,
+    log: silentLog,
+  });
+
+  assert.equal(entry.mirrorAddedMovies, 1);
+  const stored = loadPairs(SECRET, dataDir)[0];
+  assert.equal(stored.watchTogetherAppliedMode, 'on');
+  assert.equal(
+    stored.watchTogetherBaseline.capturedAt,
+    storedBaseline.capturedAt,
+  );
+  assert.equal(
+    readDebugLog(dataDir).includes('starting point captured'),
+    false,
+  );
+});
+
+test('WATCH_TOGETHER=off suppresses the mirror while the pair flag is on, and leaves other pairs untouched', async (t) => {
+  const dataDir = tempDir(t);
+  const movie = 'tt1700001';
+  const tk = makePair({ watchTogetherBaseline: baseline([]) });
+  const ange = {
+    name: 'Ange',
+    stremioAuthKey: 'ange-key',
+    simkl: { access_token: 'ange-token', client_id: 'ange-client' },
+    watchTogether: false,
+    mirrorSimkl: null,
+    watchTogetherBaseline: null,
+  };
+  savePairs([tk, ange], SECRET, dataDir);
+  const angeBefore = JSON.parse(
+    JSON.stringify(loadPairs(SECRET, dataDir)[1]),
+  );
+  const calls = installReconcilerFetch(t, {
+    items: [movieItem(movie)],
+    videosByShow: {},
+    libraries: {
+      'Bearer primary-token': { movies: [], shows: [] },
+      'Bearer mirror-token': { movies: [], shows: [] },
+      'Bearer ange-token': { movies: [simklMovie(movie)], shows: [] },
+    },
+  });
+
+  const status = await runReconcilerOnce({
+    secret: SECRET,
+    dataDir,
+    log: silentLog,
+    env: { WATCH_TOGETHER: 'off' },
+  });
+
+  // TK's own sync still runs; only the mirror is suppressed.
+  assert.equal(status.pairs.TK.addedMovies, 1);
+  assert.equal(status.pairs.TK.mirrorAddedMovies, 0);
+  assert.deepEqual(postedItems(calls, 'Bearer mirror-token'), {
+    movies: new Set(),
+    episodes: new Set(),
+  });
+  assert.equal(calls.simklGets.includes('Bearer mirror-token'), false);
+  const logText = readDebugLog(dataDir);
+  const soloLines = logText
+    .split('\n')
+    .filter((line) =>
+      line.includes('[mirror:TK] Watch Together off — mirror skipped (solo)'),
+    );
+  assert.equal(soloLines.length, 1);
+  // Ange's pair gets no mirror lines and her stored record is
+  // byte-for-byte what it was — the switch machinery never touches it.
+  assert.equal(logText.includes('[mirror:Ange]'), false);
+  assert.deepEqual(loadPairs(SECRET, dataDir)[1], angeBefore);
+  // TK's pair remembers the applied off mode for the next switch-on.
+  assert.equal(loadPairs(SECRET, dataDir)[0].watchTogetherAppliedMode, 'off');
+});
+
+test('WATCH_TOGETHER=on mirrors through a parked sign-in while the pair flag is off', async (t) => {
+  const dataDir = tempDir(t);
+  const newMovie = 'tt1800001';
+  savePairs(
+    [
+      makePair({
+        watchTogether: false,
+        watchTogetherAppliedMode: 'on',
+        watchTogetherBaseline: baseline([]),
+      }),
+    ],
+    SECRET,
+    dataDir,
+  );
+  const calls = installReconcilerFetch(t, {
+    items: [movieItem(newMovie)],
+    videosByShow: {},
+    libraries: {
+      'Bearer primary-token': { movies: [simklMovie(newMovie)], shows: [] },
+      'Bearer mirror-token': { movies: [], shows: [] },
+    },
+  });
+
+  const entry = await reconcilePair(loadPairs(SECRET, dataDir)[0], {
+    secret: SECRET,
+    dataDir,
+    log: silentLog,
+    env: { WATCH_TOGETHER: 'on' },
+  });
+
+  assert.equal(entry.mirrorAddedMovies, 1);
+  assert.deepEqual(postedItems(calls, 'Bearer mirror-token').movies, new Set([newMovie]));
+  assert.equal(
+    readDebugLog(dataDir).includes('starting point captured'),
+    false,
+  );
+});
+
+test('starting-point capture failure mirrors nothing, flags needsBaseline, and does not mark the mode applied', async (t) => {
+  const dataDir = tempDir(t);
+  const oldMovie = 'tt1900001';
+  const brokenShow = 'tt1900010';
+  const storedBaseline = baseline([oldMovie]);
+  savePairs(
+    [
+      makePair({
+        watchTogetherAppliedMode: 'off',
+        watchTogetherBaseline: storedBaseline,
+      }),
+    ],
+    SECRET,
+    dataDir,
+  );
+  // brokenShow has no Cinemeta episode list, so extraction leaves it
+  // unresolved and the baseline capture must refuse a partial
+  // snapshot.
+  const calls = installReconcilerFetch(t, {
+    items: [movieItem(oldMovie), seriesItem(brokenShow, 1, 1)],
+    videosByShow: {},
+    libraries: {
+      'Bearer primary-token': { movies: [], shows: [] },
+      'Bearer mirror-token': { movies: [], shows: [] },
+    },
+  });
+
+  const entry = await reconcilePair(loadPairs(SECRET, dataDir)[0], {
+    secret: SECRET,
+    dataDir,
+    log: silentLog,
+  });
+
+  assert.equal(entry.needsBaseline, true);
+  assert.equal(entry.mirrorAddedMovies, 0);
+  assert.equal(entry.mirrorAddedEpisodes, 0);
+  assert.deepEqual(postedItems(calls, 'Bearer mirror-token'), {
+    movies: new Set(),
+    episodes: new Set(),
+  });
+  assert.equal(calls.simklGets.includes('Bearer mirror-token'), false);
+  // The failure changes nothing on disk: the old baseline stands and
+  // the applied mode stays off, so the next run retries the capture.
+  const stored = loadPairs(SECRET, dataDir)[0];
+  assert.equal(stored.watchTogetherAppliedMode, 'off');
+  assert.deepEqual(stored.watchTogetherBaseline, storedBaseline);
+  assert.match(
+    readDebugLog(dataDir),
+    /\[mirror:TK\] Watch Together starting-point capture failed — .* — mirroring nothing \(needsBaseline\)/,
+  );
 });

@@ -475,3 +475,104 @@ test('end to end: real postHistory surfaces confirmed counts in the log', async 
     /\[live\] mirror posted tt1000002 \(HTTP 201\) — Simkl added 1 movie\(s\)/,
   );
 });
+
+// --- .env solo/together switch (WATCH_TOGETHER) ----------------------
+
+test('WATCH_TOGETHER=off silences the live mirror while the pair flag is on', async (t) => {
+  const env = { WATCH_TOGETHER: 'off' };
+  const pairs = [tkPair(), angePair()];
+  assert.deepEqual(
+    decideLiveMirror({
+      pairs,
+      clientId: 'tk-client',
+      item: { imdb: 'tt1000002' },
+      env,
+    }),
+    { action: 'none', reason: 'watch-together-off', pair: pairs[0] },
+  );
+
+  const calls = [];
+  const options = baseOptions(t, {
+    postHistoryFn: recordingPostHistory(calls),
+    env,
+  });
+  const result = await mirrorLivePick({
+    ...options,
+    clientId: 'tk-client',
+    item: { imdb: 'tt1000002' },
+  });
+  assert.equal(result.action, 'none');
+  assert.equal(result.reason, 'watch-together-off');
+  assert.equal(calls.length, 0);
+  assert.equal(readDebugLog(options.dataDir), '');
+
+  // An unrecognized value is no override: the pair flag decides.
+  assert.equal(
+    decideLiveMirror({
+      pairs,
+      clientId: 'tk-client',
+      item: { imdb: 'tt1000002' },
+      env: { WATCH_TOGETHER: 'banana' },
+    }).action,
+    'post',
+  );
+});
+
+test('live mirror fires with WATCH_TOGETHER=on and a parked pair flag off', async (t) => {
+  const calls = [];
+  const options = baseOptions(t, {
+    loadPairsFn: () => [
+      tkPair({
+        watchTogether: false,
+        watchTogetherAppliedMode: 'on',
+      }),
+      angePair(),
+    ],
+    postHistoryFn: recordingPostHistory(calls),
+    env: { WATCH_TOGETHER: 'on' },
+  });
+  const result = await mirrorLivePick({
+    ...options,
+    clientId: 'tk-client',
+    item: { imdb: 'tt1000010', season: 1, episode: 3 },
+  });
+  assert.equal(result.action, 'posted');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].auth.access_token, 'mirror-token');
+  assert.match(
+    readDebugLog(options.dataDir),
+    /\[live\] mirror posted tt1000010 S1E3 \(HTTP 201\)/,
+  );
+});
+
+test('live mirror waits for the reconciler after a switch-on (applied mode still off)', async (t) => {
+  // The stored baseline is still the pre-solo one until a reconcile
+  // run captures the fresh starting point and flips the applied
+  // mode; mirroring against it could copy solo watches across, so
+  // picks skip silently in the meantime.
+  const pairs = [tkPair({ watchTogetherAppliedMode: 'off' }), angePair()];
+  assert.deepEqual(
+    decideLiveMirror({
+      pairs,
+      clientId: 'tk-client',
+      item: { imdb: 'tt1000002' },
+      env: {},
+    }),
+    { action: 'none', reason: 'switch-pending', pair: pairs[0] },
+  );
+
+  const calls = [];
+  const options = baseOptions(t, {
+    loadPairsFn: () => pairs,
+    postHistoryFn: recordingPostHistory(calls),
+  });
+  const result = await mirrorLivePick({
+    ...options,
+    clientId: 'tk-client',
+    item: { imdb: 'tt1000002' },
+  });
+  assert.equal(result.action, 'none');
+  assert.equal(result.reason, 'switch-pending');
+  assert.equal(calls.length, 0);
+  assert.equal(readDebugLog(options.dataDir), '');
+});

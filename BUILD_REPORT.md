@@ -304,3 +304,123 @@ not show which decision went which way for a single item.
 - No behaviour change: sync decisions, payloads, status.json, and pair
   storage are untouched. Applying this build needs only
   `docker compose up -d --build` — no pair re-save, no re-setup.
+
+## Instant Mirror (Added 2026-11-02)
+
+Follow-up to a live session on 2026-11-02: Watch Together itself was
+proven working (baseline captured 8:31 PM MST, mirror attached to
+Ange's account), but a together watch only reached Ange's Simkl at
+the next reconciler run, because mirroring was reconciler-only — the
+Debug Logger section above records that as the design at the time.
+TK asked for the mirror to land instantly, like his own Simkl
+marking. This build adds that fast path. The reconciler mirror pass
+is unchanged and remains the mechanism of record.
+
+**Design**
+
+- Trigger point: `syncSimklMetaObject`
+  (`src/utils/receivers/simkl/api/sync.ts`) — the one place a live
+  Simkl write is known to have happened (it runs only after the
+  receiver's live-sync type filter passes, and only for the subtitles
+  stream-pick route). After the primary POST is confirmed, it fires
+  the mirror without awaiting it: the stream/subtitles response is
+  never delayed by the mirror, and the mirror call is built to never
+  throw or reject into the caller.
+- Pair matching: by Simkl **client_id**. Each person has their own
+  Simkl app (SETUP.md Step 4); the addon config that made the pick
+  carries that app's client_id in its Simkl auth, and the saved pair
+  stores the same value in `pair.simkl.client_id`. The access token
+  cannot be the key — the config holds its own grant, and the pair's
+  stored token is refreshed and replaced over time — while the
+  client_id is stable for the life of the app. Matching is against
+  `pair.simkl.client_id` only, never `pair.mirrorSimkl.client_id`:
+  Ange's picks therefore match Ange's pair (Watch Together off) and
+  mirror nothing, and can never match TK's pair through its mirror
+  credentials.
+- Gates, in order: a pair matched; Watch Together on; a mirror
+  account connected; a valid stored baseline
+  (`isWatchTogetherBaseline`). Any gate failing means the pick is not
+  a Watch Together pick and nothing is logged — ordinary picks stay
+  silent in the log. The baseline is then enforced on the single
+  item with the reconciler's own scheme (movie = IMDb id in
+  `baseline.movies`; episode = `season:episode` key in
+  `baseline.shows[imdb]`); an in-baseline pick logs
+  `[live] mirror excluded (in baseline) <ttid> [S<s>E<e>]` and stops.
+- Post: the single item is sent with the reconciler's `postHistory`
+  (`src/reconciler/simkl.mjs`), same payload shape as the reconciler
+  mirror, and logged as `[live] mirror posted <ttid> [S<s>E<e>]
+  (HTTP <status>)`. The mirror token lifecycle copies
+  `reconcile.mjs` `syncTarget` for the mirror target: proactive
+  refresh when the token is inside its last day, one
+  refresh-and-retry on a 401, refreshed tokens persisted through
+  `updatePairAuth(pair, 'mirrorSimkl', ...)`. Failures log
+  `[live] mirror failed <item> — <reason>` (no secrets) and the
+  reconciler backfills on its next run.
+- Semantics change, stated plainly: instant mirroring marks at pick
+  time — started counts as marked, the same rule as the picker's own
+  live marking. The reconciler path still only marks
+  flagged-watched items. Nothing about pair storage, the configure
+  page, the reconciler, or the primary live write changed, and no
+  new environment variables were added; `DEBUG_LOG=0` silences the
+  new lines with all the others (they go through `debug-log.mjs`,
+  scope `live`).
+
+**Files Changed**
+
+- `src/reconciler/live-mirror.mjs` (new): pair matching
+  (`findPairForClientId`), the single-item baseline check
+  (`itemInBaseline`), the pure decision function
+  (`decideLiveMirror`), the payload builder (`buildMirrorPayload`),
+  and the fail-silent async entry (`mirrorLivePick`) with the
+  refresh-and-retry token handling and all `[live]` mirror log
+  lines. The network/store functions are injectable seams for tests;
+  production defaults are the real pair store and Simkl helpers.
+- `src/utils/receivers/simkl/api/sync.ts`: after a confirmed live
+  Simkl write, fire-and-forget `mirrorLivePick` with the config's own
+  Simkl client_id and the picked item (IMDb id, plus season/episode
+  for series). Picks without an IMDb id skip it — the baseline scheme
+  is IMDb-based, as in the reconciler.
+- `tests/live-mirror.test.mjs` (new) and `package.json`
+  (`test:live-mirror` script): 11 tests — baseline membership for
+  movies and episodes, the decision matrix (baseline hit/miss, Watch
+  Together off via Ange's pair, no mirror account, missing/invalid
+  baseline, no pair match), payload shape, exclusion/posted log
+  lines, silence for non-Watch-Together and unmatched picks,
+  401 refresh-and-retry with persistence, 401 with no refresh token,
+  an end-to-end run through the real encrypted pair store and the
+  real `postHistory` (mocked fetch) proving the wire request carries
+  the mirror credentials, and `DEBUG_LOG=0` silencing.
+- `SETUP.md`: new "Watch Together — Instant Mirror" section after
+  Step 7, plus a line in the Debug Log section.
+- `BUILD_REPORT.md`: this section.
+
+**Gate Results (This VM)**
+
+- `npm run test:reconciler`: 12/12 pass — unchanged from the logger
+  build's baseline.
+- `npm run test:live-mirror`: 11/11 pass (new suite).
+- `npm run build`: 0 errors (type check and lint checked; the 19
+  warnings are pre-existing and none are in the changed files).
+- Smoke: the built server was run with a fixture `DATA_DIR`
+  (synthetic encrypted pairs: a Watch Together pair whose baseline
+  holds Simpsons S37E10/S37E11, mirror creds as obvious `smoke-*`
+  placeholders, and a plain Ange pair). `/configure` returned HTTP
+  200. A harness then drove the real mirror code path against that
+  fixture data dir with `fetch` stubbed to a local mock Simkl
+  (HTTP 201): the in-baseline pick (S37E11) logged
+  `mirror excluded (in baseline)` and posted nothing; the
+  post-baseline pick (S37E12) posted exactly once, with the mirror
+  account's credentials and the single-episode payload, and logged
+  `mirror posted tt0096697 S37E12 (HTTP 201)`; picks carrying Ange's
+  client_id and an unknown client_id produced no posts and no log
+  lines. The harness drove the mirror helper directly rather than a
+  full stream pick through the Qwik route — generating a real addon
+  config URL for the fixture was not practical in this VM; the
+  route-side trigger is covered by the build, the unit tests, and
+  the wire test above. Smoke processes and fixtures were removed
+  afterwards.
+- Not verified here: the instant mirror against real Simkl accounts
+  and real tokens, inside Stremio Kai on TK's PC, and the token
+  refresh path against the live Simkl token endpoint (covered by
+  injected-fake tests only). Applying this build needs only
+  `docker compose up -d --build` — no pair re-save, no re-setup.

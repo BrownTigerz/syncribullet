@@ -133,6 +133,34 @@ Re-saving the pair while Watch Together stays on — for example to
 reconnect a token — keeps the original starting point. It does not
 move forward.
 
+## Watch Together — Instant Mirror
+
+With Watch Together on, TK does not have to wait for the next
+reconcile run for a watch to reach Ange's Simkl. When a stream is
+picked through this fork's addon, the server posts the item to TK's
+own Simkl (as before) and, in the same moment, to Ange's Simkl as
+well. Look for these lines under `[live]` in `data\debug.log`:
+
+- `mirror posted tt0096697 S37E12 (HTTP 201)` — the item landed on
+  the mirror account at pick time.
+- `mirror excluded (in baseline) tt0096697 S37E11` — the item is from
+  before Watch Together was switched on, so nothing was copied.
+
+The starting point is enforced exactly as in the reconcile runs:
+re-picking anything watched before the switch-on mirrors nothing.
+
+One honest difference from the reconciler path: instant means marked
+at **pick** time. Starting an episode counts, even if it is stopped
+a minute later — the same rule TK's own live marking already uses.
+The reconciler remains the safety net: it still re-checks everything
+on its schedule and backfills anything the instant path could not
+see (picks through other addons, server downtime, a failed instant
+post).
+
+Ange's own watching is not affected. Her picks match her pair, which
+has no Watch Together, so nothing she watches is ever mirrored
+anywhere.
+
 ## Step 8 — Install The Addon In Stremio Kai
 
 Per person, on their own machine, from their own configure session:
@@ -181,7 +209,10 @@ actually decided, line by line:
   held back, which were already on the second account, and which were
   posted to it.
 - Every live stream pick through the addon: the item, which accounts a
-  write was tried for, and whether Simkl accepted it.
+  write was tried for, and whether Simkl accepted it. With Watch
+  Together on, the instant mirror's decision for that pick is there
+  too (`mirror posted`, `mirror excluded (in baseline)`, or
+  `mirror failed` with the reason).
 - Token refreshes and errors, in full.
 
 The log never contains Simkl tokens, Stremio keys, or addon links. Item

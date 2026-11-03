@@ -16,9 +16,19 @@
 // Watch Together is the one exception to "diff the full watched set":
 // the mirror account receives only (current watched set - the baseline
 // captured when Watch Together was switched on), diffed against the
-// mirror's own library. A Watch Together pair with no valid baseline
-// mirrors nothing and is flagged needsBaseline — a full-history mirror
-// is never used as a fallback.
+// mirror's own library. A full-history mirror is never used as a
+// fallback: when no valid baseline exists, the reconciler captures one
+// from the current watched set (mirroring nothing beyond it), and if
+// that capture fails the pair mirrors nothing and is flagged
+// needsBaseline.
+//
+// Whether Watch Together is in effect is decided per run by
+// effectiveWatchTogether: the WATCH_TOGETHER .env override (the
+// solo/together switch) when set, else the pair's stored flag. The
+// pair record's watchTogetherAppliedMode remembers the last applied
+// mode so the baseline is recaptured only on a real off->on switch —
+// a plain container restart with the mode already applied mirrors
+// against the stored baseline as usual.
 
 import { createDebugLogger } from './debug-log.mjs';
 import {
@@ -26,6 +36,7 @@ import {
   loadPairs,
   readStatus,
   updatePairAuth,
+  updatePairWatchTogether,
   writeStatus,
 } from './pairs-store.mjs';
 import {
@@ -37,8 +48,11 @@ import {
 } from './simkl.mjs';
 import { extractWatched, fetchStremioLibrary, HttpError } from './stremio.mjs';
 import {
+  captureWatchTogetherBaseline,
+  effectiveWatchTogether,
   isWatchTogetherBaseline,
   subtractWatchTogetherBaseline,
+  watchTogetherOverride,
 } from './watch-together-baseline.mjs';
 
 const REFRESH_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -282,10 +296,26 @@ async function syncTarget({
   }
 }
 
-export async function reconcilePair(pair, { secret, dataDir, log = console }) {
+export async function reconcilePair(
+  pair,
+  { secret, dataDir, log = console, env = process.env },
+) {
   const dbg = createDebugLogger(dataDir);
   const pairScope = `pair:${pair.name}`;
   const mirrorScope = `mirror:${pair.name}`;
+  // Persist Watch Together bookkeeping (baseline / applied mode)
+  // without ever failing the run: a pair handed to reconcilePair
+  // directly may not be in the store, and a store hiccup must not
+  // stop the pair's own reconcile. Callers update the in-memory pair
+  // object either way; the store copy matters for the NEXT run.
+  const persistWatchTogether = (fields) => {
+    try {
+      updatePairWatchTogether(pair.name, fields, secret, dataDir);
+    } catch {
+      // Best effort only — see above.
+    }
+  };
+  let mirrorRan = false;
   const startedAt = new Date().toISOString();
   const entry = {
     lastRunAt: startedAt,
@@ -338,12 +368,44 @@ export async function reconcilePair(pair, { secret, dataDir, log = console }) {
     entry.addedMovies = primary.addedMovies;
     entry.addedEpisodes = primary.addedEpisodes;
 
-    if (pair.watchTogether) {
+    // --- Watch Together mirror -------------------------------------
+    // State machine over (effective mode, applied mode, baseline):
+    // pairs with no Watch Together setup at all (no mirror sign-in,
+    // flag off, no baseline, no applied mode — Ange's pair) skip
+    // every branch below: no store writes, no mirror log lines.
+    const wtOverride = watchTogetherOverride(env);
+    const mirrorOn = effectiveWatchTogether(pair, env);
+    const hasMirrorAuth = !!(
+      pair.mirrorSimkl?.access_token && pair.mirrorSimkl?.client_id
+    );
+
+    if (!mirrorOn) {
+      if (wtOverride === false && hasMirrorAuth) {
+        // The .env switch is forcing solo for a pair that has a
+        // mirror configured — say so once per run, so the log proves
+        // the switch is in effect. With no override set this branch
+        // is unreachable and off runs log exactly what they always
+        // did (nothing).
+        dbg(mirrorScope, 'Watch Together off — mirror skipped (solo)');
+      }
+      const wtTracked =
+        hasMirrorAuth ||
+        !!pair.watchTogether ||
+        isWatchTogetherBaseline(pair.watchTogetherBaseline) ||
+        pair.watchTogetherAppliedMode !== undefined;
+      if (wtTracked && pair.watchTogetherAppliedMode !== 'off') {
+        persistWatchTogether({ appliedMode: 'off' });
+        pair.watchTogetherAppliedMode = 'off';
+      }
+    } else if (!hasMirrorAuth) {
+      // Watch Together is in effect but there is no mirror account
+      // to copy to — the same reports as before the switch existed.
       if (!isWatchTogetherBaseline(pair.watchTogetherBaseline)) {
         // No safe starting point: mirror NOTHING. Falling back to the
-        // full watched set here would copy the pair's entire history to
-        // the mirror account, which is exactly what the baseline exists
-        // to prevent. The pair's own reconcile above is unaffected.
+        // full watched set here would copy the pair's entire history
+        // to the mirror account, which is exactly what the baseline
+        // exists to prevent. The pair's own reconcile above is
+        // unaffected.
         entry.needsBaseline = true;
         log.error(
           `[reconciler] ${pair.name}: Watch Together is on but no starting-point baseline is stored; mirroring nothing. Save the pair again with Watch Together on to capture the starting point.`,
@@ -352,7 +414,67 @@ export async function reconcilePair(pair, { secret, dataDir, log = console }) {
           mirrorScope,
           'Watch Together is on but no valid baseline is stored — mirroring nothing (needsBaseline)',
         );
-      } else if (pair.mirrorSimkl) {
+      } else {
+        dbg(
+          mirrorScope,
+          'Watch Together is on but no mirror Simkl account is connected — mirroring nothing',
+        );
+      }
+    } else {
+      let mirrorReady = isWatchTogetherBaseline(pair.watchTogetherBaseline);
+      if (mirrorReady && pair.watchTogetherAppliedMode === undefined) {
+        // Adopt: a pair saved before applied-mode tracking existed
+        // (or just re-saved from the configure page, whose save
+        // rebuilds the record without the field) keeps its stored
+        // starting point exactly — a plain restart or deploy must
+        // never move it forward. Silent on purpose: adopting adds no
+        // log lines to an ordinary run.
+        persistWatchTogether({ appliedMode: 'on' });
+        pair.watchTogetherAppliedMode = 'on';
+      } else if (!mirrorReady || pair.watchTogetherAppliedMode === 'off') {
+        // A real off->on switch (applied mode still off), or no
+        // valid starting point at all: capture the current watched
+        // set as the new starting point, then mirror nothing beyond
+        // it this run. Readiness is revoked first: until the capture
+        // succeeds, the stored baseline (if any) is the stale
+        // pre-switch one and must not be mirrored against. If the
+        // capture fails, mirror nothing and leave the applied mode
+        // untouched so the next run retries — fail closed, never
+        // fall back to the full history or the stale baseline.
+        mirrorReady = false;
+        try {
+          const freshBaseline = await captureWatchTogetherBaseline(
+            pair.stremioAuthKey,
+            { log },
+          );
+          persistWatchTogether({
+            baseline: freshBaseline,
+            appliedMode: 'on',
+          });
+          pair.watchTogetherBaseline = freshBaseline;
+          pair.watchTogetherAppliedMode = 'on';
+          const capturedEpisodes = Object.values(freshBaseline.shows).reduce(
+            (total, episodes) => total + episodes.length,
+            0,
+          );
+          dbg(
+            mirrorScope,
+            `Watch Together switched on — starting point captured (${freshBaseline.movies.length} movie(s), ${capturedEpisodes} episode(s))`,
+          );
+          mirrorReady = true;
+        } catch (e) {
+          entry.needsBaseline = true;
+          log.error(
+            `[reconciler] ${pair.name}: Watch Together starting point could not be captured (${e.message}); mirroring nothing this run.`,
+          );
+          dbg(
+            mirrorScope,
+            `Watch Together starting-point capture failed — ${e.message} — mirroring nothing (needsBaseline)`,
+          );
+        }
+      }
+      if (mirrorReady) {
+        mirrorRan = true;
         const baseline = pair.watchTogetherBaseline;
         const baselineEpisodeCount = Object.values(baseline.shows).reduce(
           (total, episodes) => total + episodes.length,
@@ -405,11 +527,6 @@ export async function reconcilePair(pair, { secret, dataDir, log = console }) {
         });
         entry.mirrorAddedMovies = mirror.addedMovies;
         entry.mirrorAddedEpisodes = mirror.addedEpisodes;
-      } else {
-        dbg(
-          mirrorScope,
-          'Watch Together is on but no mirror Simkl account is connected — mirroring nothing',
-        );
       }
     }
 
@@ -418,7 +535,7 @@ export async function reconcilePair(pair, { secret, dataDir, log = console }) {
       `[reconciler] ${pair.name}: run complete — added ${entry.addedMovies} movie(s), ${entry.addedEpisodes} episode(s)` +
         (entry.needsBaseline
           ? '; mirror skipped (no Watch Together baseline)'
-          : pair.watchTogether && pair.mirrorSimkl
+          : mirrorRan
             ? `; mirror added ${entry.mirrorAddedMovies} movie(s), ${entry.mirrorAddedEpisodes} episode(s)`
             : '') +
         (entry.skipped ? `; ${entry.skipped} watched item(s) skipped (unresolvable)` : ''),
@@ -426,7 +543,7 @@ export async function reconcilePair(pair, { secret, dataDir, log = console }) {
     dbg(
       pairScope,
       `run complete — added ${entry.addedMovies} movie(s), ${entry.addedEpisodes} episode(s)` +
-        (pair.watchTogether && pair.mirrorSimkl && !entry.needsBaseline
+        (mirrorRan && !entry.needsBaseline
           ? `; mirror added ${entry.mirrorAddedMovies} movie(s), ${entry.mirrorAddedEpisodes} episode(s)`
           : '') +
         (entry.needsBaseline ? '; mirror skipped (no baseline)' : '') +
@@ -448,7 +565,7 @@ export async function reconcilePair(pair, { secret, dataDir, log = console }) {
   return entry;
 }
 
-export async function runReconcilerOnce({ secret, dataDir = getDataDir(), log = console } = {}) {
+export async function runReconcilerOnce({ secret, dataDir = getDataDir(), log = console, env = process.env } = {}) {
   const dbg = createDebugLogger(dataDir);
   if (!secret) {
     log.error(
@@ -485,7 +602,7 @@ export async function runReconcilerOnce({ secret, dataDir = getDataDir(), log = 
   }
 
   for (const pair of pairs) {
-    const entry = await reconcilePair(pair, { secret, dataDir, log });
+    const entry = await reconcilePair(pair, { secret, dataDir, log, env });
     if (!entry.lastSuccessAt && previous.pairs[pair.name]?.lastSuccessAt) {
       entry.lastSuccessAt = previous.pairs[pair.name].lastSuccessAt;
     }

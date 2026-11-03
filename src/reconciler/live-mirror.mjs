@@ -7,7 +7,10 @@
 // live Simkl write to the picker's own account, the same item is also
 // posted to the mirror account in the same moment — still gated by the
 // pair's Watch Together baseline, so a re-pick of anything watched
-// before Watch Together was switched on mirrors nothing.
+// before Watch Together was switched on mirrors nothing. The on/off
+// gate is the effective mode (the WATCH_TOGETHER .env solo/together
+// override when set, else the pair's stored flag), shared with the
+// reconciler via effectiveWatchTogether.
 //
 // Pair matching: the addon config that made the pick carries the
 // picker's own Simkl app client_id (Simkl app per person, see
@@ -43,7 +46,10 @@ import {
   refreshSimklAuth,
 } from './simkl.mjs';
 import { HttpError } from './stremio.mjs';
-import { isWatchTogetherBaseline } from './watch-together-baseline.mjs';
+import {
+  effectiveWatchTogether,
+  isWatchTogetherBaseline,
+} from './watch-together-baseline.mjs';
 
 const REFRESH_WINDOW_MS = 24 * 60 * 60 * 1000;
 
@@ -90,14 +96,27 @@ export function itemInBaseline(baseline, item) {
  * 'none' covers every ordinary case (no pair for this config, Watch
  * Together off, no mirror account connected, no valid baseline) so the
  * caller logs nothing for picks Watch Together does not apply to.
+ *
+ * The on/off gate is the EFFECTIVE mode (effectiveWatchTogether):
+ * the WATCH_TOGETHER .env override when set, else the pair's stored
+ * flag — the same gate the reconciler uses, so the solo/together
+ * switch silences (or enables) both mirror paths together. One extra
+ * guard: when the pair's last applied mode is 'off', a switch-on has
+ * not been applied by the reconciler yet and the stored baseline is
+ * still the pre-solo one — mirroring against it could copy solo
+ * watches across, so the pick skips silently until a reconcile run
+ * captures the fresh starting point and flips the applied mode.
  */
-export function decideLiveMirror({ pairs, clientId, item }) {
+export function decideLiveMirror({ pairs, clientId, item, env = process.env }) {
   const pair = findPairForClientId(pairs, clientId);
   if (!pair) {
     return { action: 'none', reason: 'no-pair' };
   }
-  if (!pair.watchTogether) {
+  if (!effectiveWatchTogether(pair, env)) {
     return { action: 'none', reason: 'watch-together-off', pair };
+  }
+  if (pair.watchTogetherAppliedMode === 'off') {
+    return { action: 'none', reason: 'switch-pending', pair };
   }
   if (!pair.mirrorSimkl?.access_token || !pair.mirrorSimkl?.client_id) {
     return { action: 'none', reason: 'no-mirror-account', pair };
@@ -148,6 +167,7 @@ export async function mirrorLivePick({
   postHistoryFn = postHistory,
   refreshAuthFn = refreshSimklAuth,
   persistAuthFn = updatePairAuth,
+  env = process.env,
   dbg = (message) => writeDebugLog('live', message, dataDir),
 } = {}) {
   try {
@@ -165,7 +185,7 @@ export async function mirrorLivePick({
       return { action: 'none', reason: 'pairs-unreadable' };
     }
 
-    const decision = decideLiveMirror({ pairs, clientId, item });
+    const decision = decideLiveMirror({ pairs, clientId, item, env });
     if (decision.action !== 'post' && decision.action !== 'excluded') {
       return decision;
     }

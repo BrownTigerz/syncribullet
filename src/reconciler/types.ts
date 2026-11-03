@@ -23,6 +23,14 @@ export interface SimklStremioPair {
   simkl: SimklStremioPairAuth;
   watchTogether?: boolean;
   mirrorSimkl?: SimklStremioPairAuth | null;
+  /**
+   * The effective Watch Together mode the reconciler last applied
+   * ('on' | 'off'), maintained by the reconciler (pairs-store.mjs) so
+   * a fresh baseline is captured only on a real off->on switch.
+   * Absent until the reconciler first derives it; a configure-page
+   * save rebuilds the record without it.
+   */
+  watchTogetherAppliedMode?: 'on' | 'off';
   watchTogetherBaseline?: WatchTogetherBaseline | null;
   updatedAt?: string;
 }

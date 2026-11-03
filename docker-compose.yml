@@ -21,5 +21,9 @@ services:
       PRIVATE_ENCRYPTION_KEY: ${PRIVATE_ENCRYPTION_KEY:?Set PRIVATE_ENCRYPTION_KEY in .env}
       APP_ORIGIN: http://localhost:${HOST_PORT:-8181}
       RECONCILE_INTERVAL_MINUTES: ${RECONCILE_INTERVAL_MINUTES:-30}
+      # Watch Together solo/together switch: on/off (see SETUP.md).
+      # Empty when unset in .env = no override; the pair's saved
+      # Watch Together setting decides, as before.
+      WATCH_TOGETHER: ${WATCH_TOGETHER:-}
     volumes:
       - ./data:/app/data

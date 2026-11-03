@@ -160,6 +160,46 @@ export async function captureWatchTogetherBaseline(
 }
 
 /**
+ * Parse the WATCH_TOGETHER environment override — the solo/together
+ * switch TK flips by editing one line in .env and restarting.
+ * Returns true (together), false (solo), or null (no override: the
+ * pair's stored watchTogether flag decides, exactly as before this
+ * switch existed). Accepts on/off and true/false, case-insensitive,
+ * surrounding whitespace ignored. Anything else — unset, empty,
+ * misspelled — is no override, never a guess.
+ */
+export function parseWatchTogetherOverride(value) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'on' || normalized === 'true') {
+    return true;
+  }
+  if (normalized === 'off' || normalized === 'false') {
+    return false;
+  }
+  return null;
+}
+
+/** The WATCH_TOGETHER override from an env bag (default process.env). */
+export function watchTogetherOverride(env = process.env) {
+  return parseWatchTogetherOverride(env?.WATCH_TOGETHER);
+}
+
+/**
+ * Whether Watch Together mirroring is in effect for this pair right
+ * now: the .env override when set, otherwise the pair's stored flag.
+ * This is the ONE gate both mirroring paths (the reconciler's mirror
+ * pass in reconcile.mjs and the instant mirror in live-mirror.mjs)
+ * consult, so the switch can never be half-applied.
+ */
+export function effectiveWatchTogether(pair, env = process.env) {
+  const override = watchTogetherOverride(env);
+  return override !== null ? override : !!pair?.watchTogether;
+}
+
+/**
  * Save-flow rule:
  * - Watch Together off: no baseline (any old baseline is dropped).
  * - Already on with a valid baseline: keep that baseline exactly; a plain

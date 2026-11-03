@@ -3,6 +3,7 @@ import type { RequestHandler } from '@builder.io/qwik-city';
 import {
   loadPairs,
   readStatus,
+  resolveMirrorForSave,
   upsertPair,
 } from '~/reconciler/pairs-store.mjs';
 import type { SimklStremioPair } from '~/reconciler/types';
@@ -85,26 +86,35 @@ export const onPost: RequestHandler = async ({ json, env, parseBody }) => {
     badRequest(json, 'Simkl is not connected');
     return;
   }
-  if (
-    body.watchTogether &&
-    (!body.mirrorSimkl?.access_token || !body.mirrorSimkl?.client_id)
-  ) {
-    badRequest(
-      json,
-      'Watch Together is on but the mirror Simkl account is not connected',
-    );
-    return;
-  }
 
   const name = body.name.trim();
   let secret: string;
   let watchTogetherBaseline: SimklStremioPair['watchTogetherBaseline'];
+  let mirrorSimkl: SimklStremioPair['mirrorSimkl'];
   try {
     secret = getSecret(env);
     const existingPairs = loadPairs(secret) as SimklStremioPair[];
     const existingPair = existingPairs.find(
       (pair: SimklStremioPair) => pair.name === name,
     );
+    // Parked mirror sign-in (resolveMirrorForSave): credentials
+    // supplied with this save (a fresh mirror approval) win; when the
+    // save supplies none, the credentials already stored on the pair
+    // are kept — so a Watch Together-off save parks the sign-in
+    // instead of discarding it, and Watch Together can later be
+    // turned back on (here, or by the WATCH_TOGETHER .env switch)
+    // without a new approval round-trip.
+    mirrorSimkl = resolveMirrorForSave(
+      body.mirrorSimkl,
+      existingPair,
+    ) as SimklStremioPair['mirrorSimkl'];
+    if (body.watchTogether && !mirrorSimkl) {
+      badRequest(
+        json,
+        'Watch Together is on but the mirror Simkl account is not connected',
+      );
+      return;
+    }
     // Baseline rules live in resolveWatchTogetherBaseline:
     // - turning Watch Together on captures the current watched set;
     // - re-saving while it is already on keeps the existing baseline;
@@ -141,14 +151,11 @@ export const onPost: RequestHandler = async ({ json, env, parseBody }) => {
       expires_at: body.simkl.expires_at,
     },
     watchTogether: !!body.watchTogether,
-    mirrorSimkl: body.mirrorSimkl
-      ? {
-          access_token: body.mirrorSimkl.access_token,
-          client_id: body.mirrorSimkl.client_id,
-          refresh_token: body.mirrorSimkl.refresh_token,
-          expires_at: body.mirrorSimkl.expires_at,
-        }
-      : null,
+    // Note: the record is rebuilt without watchTogetherAppliedMode —
+    // that field is the reconciler's applied-mode tracking, and a
+    // page save resets it to "unset" for the reconciler to re-derive
+    // (adopt / recapture / set off) on its next run.
+    mirrorSimkl: mirrorSimkl ?? null,
     watchTogetherBaseline,
   };
 

@@ -13,6 +13,15 @@
 //   simkl: { access_token, client_id, refresh_token?, expires_at? },
 //   watchTogether?: boolean,
 //   mirrorSimkl?: { access_token, client_id, refresh_token?, expires_at? } | null,
+//   watchTogetherAppliedMode?: 'on' | 'off',
+//     // The effective Watch Together mode the reconciler last applied
+//     // (see watch-together-baseline.mjs effectiveWatchTogether). The
+//     // reconciler maintains it so a fresh baseline is captured only on
+//     // a real off->on switch, never on a plain restart. Absent on
+//     // pairs saved before the .env switch existed; the reconciler
+//     // adopts the stored baseline for those. A configure-page save
+//     // rebuilds the record without this field, resetting it to
+//     // "unset" for the reconciler to re-derive on its next run.
 //   watchTogetherBaseline?: {
 //     version: 1,
 //     capturedAt: string (ISO),
@@ -123,6 +132,58 @@ export function updatePairAuth(name, target, auth, secret, dataDir = getDataDir(
   pair.updatedAt = new Date().toISOString();
   savePairs(pairs, secret, dataDir);
   return true;
+}
+
+/**
+ * Replace only the Watch Together fields of a stored pair: the
+ * starting-point baseline and/or the last applied mode. Reloads the
+ * store and mutates just those fields, so a token refreshed moments
+ * earlier (updatePairAuth) is never clobbered by a stale in-memory
+ * pair object. Fields left undefined are untouched. Returns false
+ * when no pair with that name is stored.
+ */
+export function updatePairWatchTogether(
+  name,
+  { baseline, appliedMode } = {},
+  secret,
+  dataDir = getDataDir(),
+) {
+  const pairs = loadPairs(secret, dataDir);
+  const pair = pairs.find((p) => p.name === name);
+  if (!pair) {
+    return false;
+  }
+  if (baseline !== undefined) {
+    pair.watchTogetherBaseline = baseline;
+  }
+  if (appliedMode !== undefined) {
+    pair.watchTogetherAppliedMode = appliedMode;
+  }
+  pair.updatedAt = new Date().toISOString();
+  savePairs(pairs, secret, dataDir);
+  return true;
+}
+
+/**
+ * Which mirror Simkl credentials a pair save stores — the parked
+ * sign-in rule. Freshly supplied credentials (a completed mirror
+ * approval on the configure page) always win. When the save supplies
+ * none, the credentials already stored on the pair are KEPT, so
+ * saving with Watch Together off parks the mirror sign-in instead of
+ * discarding it, and a later save or the .env switch can turn Watch
+ * Together back on without a new approval round-trip. Returns null
+ * only when neither source has credentials.
+ */
+export function resolveMirrorForSave(suppliedMirror, existingPair) {
+  if (suppliedMirror?.access_token && suppliedMirror?.client_id) {
+    return {
+      access_token: suppliedMirror.access_token,
+      client_id: suppliedMirror.client_id,
+      refresh_token: suppliedMirror.refresh_token,
+      expires_at: suppliedMirror.expires_at,
+    };
+  }
+  return existingPair?.mirrorSimkl ?? null;
 }
 
 export function readStatus(dataDir = getDataDir()) {

@@ -424,3 +424,120 @@ is unchanged and remains the mechanism of record.
   refresh path against the live Simkl token endpoint (covered by
   injected-fake tests only). Applying this build needs only
   `docker compose up -d --build` — no pair re-save, no re-setup.
+
+## Confirmed Simkl Counts In The Debug Log (Added 2026-11-03)
+
+Follow-up to the instant-mirror live session: when the South Park
+S29E4 test mirrored to Ange's Simkl, her show page showed Simkl's
+"watched all" wording and the log could not settle whether one
+episode or the whole show had been marked — it only recorded the
+HTTP 201. (Only the tested episode was actually ticked on her
+account — the "watched all" was Simkl's show-page label.) Simkl's
+`/sync/history` response has
+always reported the truth in its `added` object — the actual count
+of movies, shows, and episodes it marked — but `postHistory` threw
+that body away. This build threads the confirmed counts into the
+debug log everywhere a write is recorded.
+
+**Design**
+
+- `src/reconciler/simkl.mjs`: `postHistoryChunk` already returned
+  the parsed response body; `postHistory` now parses each chunk's
+  `added` object with the new `parseAddedCounts` and passes it to
+  the `onPost` callback as `info.added`, alongside the existing
+  sent counts and HTTP status. Parsing is defensive: a missing
+  `added`, or a field that is not a finite, non-negative number,
+  degrades to null (per field, or overall) and never throws. The
+  new `formatAddedCounts` renders the one-line suffix —
+  `Simkl added 1 episode(s)`, `Simkl added 2 movie(s), 3
+  episode(s)` — from the movie and episode counts (the show-entry
+  count is parsed but not rendered; movies and episodes are the
+  units that reconcile against what was sent). A confirmed zero is
+  rendered when Simkl reports counts but added nothing, so a
+  re-post of an already-watched item reads as confirmed-zero
+  rather than silence. No `added` in the response → no suffix, and
+  the log line keeps its previous form exactly.
+- `src/reconciler/reconcile.mjs`: the `attemptSync` post callback
+  appends the suffix to the per-chunk line —
+  `POST /sync/history — 0 movie(s), 1 show(s) → HTTP 201 — Simkl
+  added 2 episode(s)`. `attemptSync` serves both the pair sync
+  (scope `pair:<name>`) and the Watch Together mirror sync (scope
+  `mirror:<name>`), so both trails gained the counts with one
+  change.
+- `src/reconciler/live-mirror.mjs`: the instant mirror captures
+  `info.added` in its `onPost` and the posted line becomes
+  `[live] mirror posted tt0121955 S29E4 (HTTP 201) — Simkl added
+  1 episode(s)`.
+- `src/utils/receivers/simkl/api/sync.ts`: the picker's own live
+  write line gained the same suffix. The axios response body was
+  already in hand at that point (it is the function's return
+  value), so this was a minimal change — parse `response.data`
+  with the same two helpers — and no stock receiver code was
+  restructured.
+- Secrecy unchanged: only the three numeric counts are read from
+  the response. Raw response bodies are never logged, and no
+  tokens, keys, or config material are involved.
+
+**Files Changed**
+
+- `src/reconciler/simkl.mjs`: `parseAddedCounts` and
+  `formatAddedCounts` (new, exported); `postHistory` passes
+  per-chunk `added` through `onPost`.
+- `src/reconciler/reconcile.mjs`: confirmed-count suffix on the
+  `attemptSync` post line (pair and mirror scopes).
+- `src/reconciler/live-mirror.mjs`: confirmed-count suffix on the
+  `[live] mirror posted` line.
+- `src/utils/receivers/simkl/api/sync.ts`: confirmed-count suffix
+  on the `stream pick — Simkl write posted` line.
+- `tests/reconciler.test.mjs`: 4 new tests (suite now 16) —
+  defensive parse/render cases; `postHistory` per-chunk threading
+  including a no-`added` response surfacing `added: null`; a full
+  `reconcilePair` run whose pair and mirror post lines carry the
+  confirmed counts; a run against bare `{}` history responses
+  whose lines stay byte-identical to before. The fetch installer
+  gained an opt-in `historyAdded` hook; default behavior is
+  unchanged.
+- `tests/live-mirror.test.mjs`: 3 new tests (suite now 14) — the
+  posted line with confirmed counts, the posted line unchanged
+  when no counts are reported, and an end-to-end run through the
+  real pair store and real `postHistory` (mocked fetch) whose log
+  line carries `Simkl added 1 movie(s)`.
+- `SETUP.md`: Debug Log section explains sent vs. confirmed
+  counts.
+- `BUILD_REPORT.md`: this section.
+
+**Gate Results (This VM)**
+
+- `npm run test:reconciler`: 16/16 pass (the previous 12
+  unchanged, plus the 4 above).
+- `npm run test:live-mirror`: 14/14 pass (the previous 11
+  unchanged, plus the 3 above).
+- `npm run build`: 0 errors (type check and lint checked; the 19
+  warnings are pre-existing and none are in the changed files).
+- Smoke: the real standalone reconciler entry
+  (`scripts/reconciler.mjs`) was run against a fixture `DATA_DIR`
+  (one synthetic encrypted Watch Together pair, baseline holding
+  S1E1 of the test show) with `fetch` stubbed at the process
+  boundary via a `--import` preload: Stremio served one watched
+  movie and the series up to S1E2; Simkl libraries were empty;
+  `/sync/history` answered 201 with `added` counts. The run's
+  debug log shows all four post lines carrying the confirmation —
+  `[pair:TK] … — Simkl added 1 movie(s)`, `[pair:TK] … — Simkl
+  added 2 episode(s)`, `[mirror:TK] … — Simkl added 1 movie(s)`,
+  `[mirror:TK] … — Simkl added 1 episode(s)` (the mirror's single
+  episode is the baseline doing its job) — and `status.json`
+  recorded a clean run (added 1 movie / 2 episodes, mirror added
+  1 / 1, no error). The built web server, run with the same
+  fixture data dir, answered `/configure` with HTTP 200. The
+  `[live]` lines were driven at the module level by the
+  end-to-end test (real pair store, real `postHistory`, mocked
+  fetch), not through a full stream pick in the running server —
+  generating a real addon config URL for the fixture remains
+  impractical in this VM, as noted in previous sections. Smoke
+  processes and fixtures were removed afterwards.
+- Not verified here: the confirmed counts against the real Simkl
+  API (its live `added` response shape is taken from the API
+  docs and the parser degrades to the old log lines if the fields
+  are absent), and the new lines inside Stremio Kai on TK's PC.
+  Applying this build needs only `docker compose up -d --build` —
+  no pair re-save, no re-setup.

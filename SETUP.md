@@ -215,6 +215,15 @@ actually decided, line by line:
   `mirror failed` with the reason).
 - Token refreshes and errors, in full.
 
+Write lines carry Simkl's own confirmation as well as what was sent:
+a line like `POST /sync/history — 0 movie(s), 1 show(s) → HTTP 201 —
+Simkl added 1 episode(s)` ends with the number of movies and episodes
+Simkl reports it actually marked. The two counts can differ — an
+episode already on the account is sent but adds nothing — and
+Simkl's count is the one that proves what landed: had a whole show
+been marked by mistake, that count would show every episode, not
+just the one that was watched.
+
 The log never contains Simkl tokens, Stremio keys, or addon links. Item
 IDs, counts, and status codes only. When it passes 5 MB it rolls over
 once to `debug.log.1` and starts fresh. It is on by default; set

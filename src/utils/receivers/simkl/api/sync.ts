@@ -1,4 +1,5 @@
 import { writeDebugLog } from '~/reconciler/debug-log.mjs';
+import { mirrorLivePick } from '~/reconciler/live-mirror.mjs';
 import { axiosInstance } from '~/utils/axios/cache';
 import type { IDs } from '~/utils/receiver/types/id';
 
@@ -65,6 +66,28 @@ export async function syncSimklMetaObject(
       'live',
       `stream pick — Simkl write posted for ${liveItemLabel(ids)} (HTTP ${response.status})`,
     );
+    // Instant Watch Together mirror: if this pick's Simkl account is a
+    // saved pair with Watch Together on, the same item is also posted
+    // to the mirror account (baseline still enforced, in
+    // ~/reconciler/live-mirror.mjs). Fire-and-forget on purpose: it is
+    // never awaited, so the stream response is not delayed, and
+    // mirrorLivePick never throws — the reconciler remains the safety
+    // net for anything it misses. The pair is matched by this config's
+    // own Simkl client_id; no config or token material is passed to
+    // the log.
+    if (ids.ids.imdb) {
+      void mirrorLivePick({
+        clientId: userConfig.auth.client_id,
+        item: {
+          imdb: String(ids.ids.imdb),
+          season: ids.count?.season,
+          episode: ids.count?.episode,
+        },
+      }).catch(() => {
+        // mirrorLivePick is built to never reject; this is a last
+        // guard so a mirror problem can never surface in a live pick.
+      });
+    }
     return await response.data;
   } catch (e) {
     const err = e as { response?: { status?: number }; message?: string };

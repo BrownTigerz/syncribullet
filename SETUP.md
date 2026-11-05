@@ -1,8 +1,10 @@
 # SimklStremio Setup
 
 Self-hosted syncribullet fork. Tracks watched movies and TV episodes from
-two Stremio accounts (TK, Ange) to two Simkl accounts. Add-only: nothing
-is ever removed from Simkl. A server-side reconciler re-checks both
+two Stremio accounts (TK, Ange) to two Simkl accounts. Add-only: the
+sync itself never removes anything from Simkl — the one exception is a
+manual, per-item undo on the configure page (see "Undo — Remove From
+Simkl History" below). A server-side reconciler re-checks both
 accounts on a schedule, so anything watched while the server was down is
 backfilled on the next run — downtime delays tracking, it never loses it.
 
@@ -221,6 +223,68 @@ first run finishes is not instant-mirrored (the reconciler still
 covers it once it is flagged watched) — this guard exists so a
 solo watch can never slip across on a stale starting point.
 
+## Marking Modes — When A Pick Marks (LIVE_MARK / MIRROR_LIVE_MARK)
+
+A stream pick through the addon normally marks the item watched on
+Simkl **at pick time** — started counts as watched. Two `.env` lines
+narrow that, independently for your own account and for the instant
+Watch Together mirror. Edit the line, restart
+(`docker compose up -d`), done — the same pattern as the
+solo/together switch.
+
+- **`LIVE_MARK`** — your own Simkl's live write:
+  - `all` (default): movies and episodes mark at pick time.
+  - `movies`: movies mark at pick time; episodes do **not** — they
+    reach your Simkl only via the reconciler, once Stremio flags
+    them watched near the end of playback. No more false marks for
+    episodes you only sampled.
+  - `off`: no live writes at all. Your Simkl is kept in sync by the
+    reconciler only.
+- **`MIRROR_LIVE_MARK`** — the same three values, for the **instant
+  mirror only**. `movies` or `off` here never touches the
+  reconciler's mirror pass, which stays watched-flag-based exactly
+  as before. It only matters while Watch Together is effectively on.
+
+Leaving a line out — or giving it any other value — is the default
+(`all`) and changes nothing: no behavior change, no new log lines.
+When a mode does skip a pick, the debug log shows one line per pick,
+for example:
+
+- `[live] live mark skipped for tt0096697 S37E12 — LIVE_MARK=movies`
+- `[live] mirror skipped for tt0096697 S37E12 — MIRROR_LIVE_MARK=off`
+
+The two switches are independent: `LIVE_MARK=off` with
+`MIRROR_LIVE_MARK=all` means your own account is reconciler-only
+while together picks still mirror to Ange instantly.
+
+## Undo — Remove From Simkl History
+
+The configure page has a **Remove From Simkl History** section
+(below Save Pair To Server) for the one-off wrong mark: an episode
+that was only started, or a copy that landed on the mirror by
+mistake. Pick the pair, pick the target, type the item's IMDb Id,
+add Season and Episode for an episode (leave both blank for a
+movie), and click **Remove**. One item at a time, by hand — there
+is no batch form and nothing calls this automatically.
+
+The two targets behave differently, on purpose:
+
+- **Own Simkl** — removes the item from that pair's Simkl history.
+  The Watch Together starting point is not touched. If the item is
+  still flagged watched in Stremio, the reconciler will add it back
+  on its next run — to make an own-account removal stick, unmark it
+  in Stremio too.
+- **Mirror (Watch Together)** — removes the item from the mirror
+  account's Simkl history **and adds it to the pair's Watch Together
+  starting point**, so the reconciler never copies it again. (If the
+  pair has no saved starting point, the removal still happens and
+  the result line says there was nothing to add it to.)
+
+Each removal lands in `data\debug.log` under `[remove]`, with
+Simkl's own confirmed count:
+
+`[remove] removed tt0121955 S29E4 from mirror of pair TK (HTTP 201) — Simkl removed 1 episode(s)`
+
 ## Step 8 — Install The Addon In Stremio Kai
 
 Per person, on their own machine, from their own configure session:
@@ -236,6 +300,70 @@ One caveat: reconnecting Simkl in the browser later (Step 9) issues a
 new token and kills the token inside an older install link. If Stremio
 catalogs from this addon stop loading, repeat this step to install a
 fresh link.
+
+## Ange's Addon Over Tailscale (HTTPS)
+
+Step 8 works for TK on the PC itself (loopback gets a pass), but
+Ange's Stremio on her laptop refuses the install link from Step 6:
+Stremio rejects plain-HTTP addon addresses on the LAN, so her addon
+was never installed and her watching is covered by the reconciler
+alone. Tailscale Serve fixes exactly that: it gives the PC a real
+HTTPS address — `https://<pc>.<tailnet>.ts.net` — that proxies to
+this server and is reachable **only inside your tailnet**. Stremio
+accepts HTTPS install links, so her addon installs and her picks
+mark her Simkl instantly, like TK's.
+
+Setup, once:
+
+1. Install Tailscale on the PC and on Ange's laptop, signed into
+   the **same tailnet** on both.
+2. In the Tailscale admin console, make sure **MagicDNS** is on and
+   **HTTPS certificates** are enabled for the tailnet (DNS settings).
+   Note the PC's Tailscale name — the address is
+   `https://<pc-name>.<tailnet-name>.ts.net`.
+3. On the PC, publish this server through Serve:
+
+   ```
+   tailscale serve --bg 8181
+   ```
+
+   (`tailscale serve status` shows it later; `tailscale serve reset`
+   undoes it.)
+4. In `.env` next to `docker-compose.yml`, set the origin the server
+   reports for itself to that HTTPS address:
+
+   ```
+   APP_ORIGIN=https://<pc-name>.<tailnet-name>.ts.net
+   ```
+
+   then `docker compose up -d` so it takes effect.
+5. On Ange's laptop, open the configure page **at the ts.net
+   address** — `https://<pc-name>.<tailnet-name>.ts.net` — and
+   connect her Stremio + Simkl there if the page asks (her saved
+   pair already exists; the browser at this new address just needs
+   her connections once so the install link is built from them).
+   Generate her install link from that page and paste it into her
+   Stremio's add-addon box. Because the address is HTTPS, Stremio
+   accepts it.
+
+Day to day: her laptop needs **Tailscale running** when she watches
+for her picks to mark instantly (the addon is reached over the
+tailnet). When Tailscale is off or she's away from it, nothing is
+lost — the reconciler still covers her pair on its schedule, as it
+does today.
+
+**Security — read before changing anything here:**
+
+- **Use Serve, never Funnel.** Serve is tailnet-only: only your own
+  devices can even see the address. Funnel publishes to the public
+  internet — **never** enable it for this server. The pair-saving
+  API on it has no login of its own, and addon install links are
+  bearer secrets (anyone holding one holds the account's sync).
+- **Never port-forward 8181** (or the container's port) on the
+  router, for this or any other reason. Tailscale needs no open
+  ports.
+- Treat the ts.net address like the LAN address: fine for your own
+  devices, not something to post or share.
 
 ## Step 9 — Checking That It Works
 
@@ -296,7 +424,10 @@ exactly where the item stopped.
 
 - Only watched movies and episodes are written to Simkl (completed).
   Plan-to-watch, watching, on-hold and dropped lists are never touched.
-- The only Simkl write is adding watched history. No deletes, no list
-  moves, ever.
-- Home network only. Do not port-forward this container or put it on a
-  public address — the pair-saving page has no login of its own.
+- Sync writes are add-only. The single delete anywhere in the build
+  is the manual, per-item undo on the configure page (see "Undo —
+  Remove From Simkl History") — nothing automatic ever removes
+  anything, and there are no list moves, ever.
+- Home network and tailnet only. Do not port-forward this container
+  or put it on a public address — the pair-saving page has no login
+  of its own.

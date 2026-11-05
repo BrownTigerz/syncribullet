@@ -170,8 +170,9 @@ presented exactly like a V1 one:
 
 Endpoints this build uses (all Bearer-authenticated):
 
-- `POST /sync/history` — mark items watched (add-only for this build; the
-  `/sync/history/remove` and `/sync/add-to-list` endpoints are never called).
+- `POST /sync/history` — mark items watched (the sync paths are add-only;
+  `/sync/add-to-list` is never called. `/sync/history/remove` is called
+  only by the manual, per-item undo — see remove-history.mjs).
 - `GET /sync/all-items/` — full library read. With `extended=full` and
   `include_all_episodes=original`, show entries include `seasons[]` with
   per-episode `{number, watched, last_watched_at}` rows, which is what the

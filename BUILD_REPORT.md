@@ -750,3 +750,203 @@ one line in `.env`, plus a restart.
   needs `docker compose up -d --build` — no pair re-save: TK's
   stored baseline is adopted on the first run, and his mirror
   sign-in is already stored.
+
+## Three Upgrades — Marking Modes, Undo, Tailscale HTTPS (Added 2026-11-04)
+
+TK asked what was left to improve and took all three: (1) options
+for *when* a pick marks, (2) an undo for a wrong mark, and (3) a
+way for Ange's Stremio to install the addon at all. One build, three
+commits' worth of surface, gated as usual.
+
+**Upgrade 1 — Marking-mode switches (LIVE_MARK / MIRROR_LIVE_MARK)**
+
+- **Shared parser.** `src/reconciler/marking-modes.mjs`:
+  `parseMarkingMode` accepts `all` / `movies` / `off`
+  (case-insensitive, whitespace ignored); unset, empty, or anything
+  else is *no override* — never a guess, the same rule as
+  `parseWatchTogetherOverride`. `decideLiveMark(env, item)` is the
+  pure own-account decision; `mirrorLiveMarkMode(env)` feeds the
+  mirror's decision. Both vars ride the existing compose
+  `environment:` plumbing (`${LIVE_MARK:-}`, `${MIRROR_LIVE_MARK:-}`)
+  and are documented in `.env.example`.
+- **Own write gate** (`src/utils/receivers/simkl/api/sync.ts`): the
+  narrowest correct point is `syncSimklMetaObject` itself — it
+  already knows whether the pick is a movie or an episode
+  (`ids.count`). When `LIVE_MARK` forbids the pick type, the
+  function logs one line and returns before any Simkl call:
+  `[live] live mark skipped for tt0096697 S37E12 — LIVE_MARK=movies`.
+  Returning early is safe: the one caller awaits the function and
+  ignores its result. With the var unset the code path is
+  byte-for-byte the old behavior and no line is written.
+- **Instant mirror gate** (`live-mirror.mjs`): `decideLiveMirror`
+  gained a fifth outcome, `{ action: 'skipped-mode', mode }`,
+  checked once the mirror machinery is known to apply (pair matched,
+  effective Watch Together on, not switch-pending, mirror account
+  present) and *before* the baseline check — so a set mode explains
+  every forbidden pick with one line
+  (`[live] mirror skipped for … — MIRROR_LIVE_MARK=off`), while
+  picks the mode allows fall through to the baseline decision
+  exactly as before. `mirrorLivePick` logs the line; the fire in
+  `sync.ts` was restructured into a local `fireMirror()` that runs
+  regardless of the own-write gate, because the two modes are
+  independent: `LIVE_MARK=off` + `MIRROR_LIVE_MARK=all` means
+  reconciler-only for TK's own account while together picks still
+  mirror instantly. The reconciler (own and mirror passes) is
+  untouched by either var.
+
+**Upgrade 2 — Undo: POST /api/remove-history**
+
+- **Simkl surface** (`simkl.mjs`): `removeFromHistory(auth, payload)`
+  posts the same single-item payload shape as `/sync/history` to
+  `/sync/history/remove` (verified against Simkl's API reference:
+  same body shape; the response reports a `deleted` object).
+  `parseRemovedCounts` / `formatRemovedCounts` mirror the
+  added-counts pair field-for-field — `deleted` first, `removed`
+  accepted as a fallback key, missing/non-numeric → null, a known
+  zero rendered as confirmed-zero ("Simkl removed 0 movie(s),
+  0 episode(s)").
+- **Core** (`src/reconciler/remove-history.mjs`):
+  `validateRemoveRequest` (pair name required; target `own` |
+  `mirror`; IMDb id must match `/^tt\d+$/`; season and episode both
+  or neither; whole numbers, season ≥ 0, episode ≥ 1) and
+  `removeHistoryItem`, which loads the pair (unknown pair → 400;
+  mirror target with no mirror credentials → 400), picks the
+  target's credentials, and writes with the house token lifecycle —
+  proactive refresh inside the last day, one refresh-and-retry on
+  401, persistence through `updatePairAuth` under the target's own
+  key. Simkl-side failures surface as 502 with the reconnect wording
+  the other writers use. Success logs under scope `remove`:
+  `[remove] removed tt0121955 S29E4 from mirror of pair TK
+  (HTTP 201) — Simkl removed 1 episode(s)`.
+- **Mirror-removal semantics.** After a successful mirror removal,
+  the core reloads the pair and appends the item to its Watch
+  Together baseline (`addToWatchTogetherBaseline` in
+  watch-together-baseline.mjs — pure, deduped, sorted, same
+  movie-id / "season:episode" scheme) persisted through
+  `updatePairWatchTogether`, so no later reconcile or instant
+  decision can copy it again. With no valid baseline the removal
+  still stands and the response carries `baselineNote:
+  'no-baseline'` plus a note saying so. Own removals never touch
+  the baseline, and the own note states the reconciler consequence
+  (still flagged in Stremio → re-added next run).
+- **Route + page.** `src/routes/api/remove-history/index.ts`
+  follows the pairs route's conventions (same `getSecret`, no login
+  — LAN only, same standing warning). The configure page gains a
+  **Remove From Simkl History** section
+  (`remove-history-section.tsx`, rendered after Save Pair): pair
+  picker from the existing GET /api/pairs list, target picker with
+  the mirror option offered only when the selected pair has one,
+  IMDb Id / Season / Episode fields, and a result line whose
+  wording comes from the server's `note` so the two semantics read
+  identically wherever the result is seen. One copy fix rode along:
+  the Save Pair section no longer claims "nothing is ever removed
+  from Simkl" — it now says the reconciler never removes anything.
+  SETUP.md's add-only statements were amended the same way.
+
+**Upgrade 3 — Ange's addon over Tailscale Serve (docs + one compose line)**
+
+Investigation findings, from the code:
+
+- **Origin.** The Qwik City Node adapter resolves the request
+  origin as `getOrigin ?? opts.origin ?? process.env.ORIGIN ??
+  fallback`, and the container's start script feeds it from
+  `APP_ORIGIN` (`start:local`). The one thing that made the
+  documented flow impossible: `docker-compose.yml` **hardcoded**
+  `APP_ORIGIN: http://localhost:${HOST_PORT:-8181}`, so setting
+  `APP_ORIGIN` in `.env` changed nothing. That line is now
+  `APP_ORIGIN: ${APP_ORIGIN:-http://localhost:${HOST_PORT:-8181}}`
+  — the only code change this upgrade needed. Default behavior is
+  unchanged.
+- **Install link.** Built client-side in `configure.tsx` from
+  `location.url.host` — it follows whatever address the browser
+  used, so a configure page opened at the ts.net address produces
+  ts.net links with no code change.
+- **Nothing else assumes HTTP.** The Simkl sign-in is the device
+  flow (no redirect URI anywhere); connections live in browser
+  localStorage, not cookies, so there is no cookie/secure-flag
+  behavior behind the proxy; no server code builds absolute URLs
+  from the Host header.
+- SETUP.md gained the section "Ange's Addon Over Tailscale
+  (HTTPS)": same-tailnet installs, MagicDNS + HTTPS certificates,
+  `tailscale serve --bg 8181` on the PC, `APP_ORIGIN` set to the
+  ts.net origin in `.env`, her install produced from the ts.net
+  configure page, Tailscale-running caveat for instant marks, and
+  in bold: **Serve only, never Funnel; never port-forward 8181** —
+  the pairs API has no login and install links are bearer secrets.
+- **Not testable from this VM:** there is no Tailscale here. This
+  part is verified by code reading and the production build only;
+  TK's PC + Ange's laptop are the gate, exactly as SETUP.md lays
+  out.
+
+**Files changed**
+
+- New: `src/reconciler/marking-modes.mjs`,
+  `src/reconciler/remove-history.mjs`,
+  `src/routes/api/remove-history/index.ts`,
+  `src/components/sections/remove-history/remove-history-section.tsx`,
+  `tests/remove-history.test.mjs`.
+- Edited: `src/reconciler/simkl.mjs` (remove call + removed-counts
+  pair), `src/reconciler/watch-together-baseline.mjs`
+  (`addToWatchTogetherBaseline`), `src/reconciler/live-mirror.mjs`
+  (mode gate), `src/utils/receivers/simkl/api/sync.ts` (LIVE_MARK
+  gate + shared `fireMirror()`), `src/components/sections/configure.tsx`
+  (render the new section), `src/components/sections/save-pair/save-pair-section.tsx`
+  (copy fix), `docker-compose.yml` (APP_ORIGIN from .env; LIVE_MARK /
+  MIRROR_LIVE_MARK passthrough), `.env.example`, `package.json`
+  (`test:remove-history` script), `tests/live-mirror.test.mjs`,
+  `SETUP.md`, `docs/SIMKL_AUTH.md`, this report.
+
+**Gate results (this VM)**
+
+- Pre-change baselines re-verified before any edit: reconciler
+  26/26, live-mirror 17/17 — and both suites were re-run green
+  after the feature code landed, before the new tests were added.
+- Reconciler tests: **26/26** (unchanged — neither marking var
+  touches the reconciler).
+- Live-mirror tests: **21/21** (17 previous, untouched + 4 new:
+  parsing matrix, `decideLiveMark` matrix, `decideLiveMirror`
+  mode matrix incl. baseline interplay and Ange-silence, and
+  `mirrorLivePick` skip lines with zero posts).
+- Remove-history tests: **11/11** (new suite): validation matrix
+  (12 bad bodies → 400), removed-counts parsing/formatting,
+  baseline-append purity, own movie removal (own creds, payload
+  shape, baseline untouched, log line), mirror episode removal
+  (mirror creds, payload shape, item in the stored baseline,
+  tokens intact, both log lines), mirror movie removal, no-baseline
+  mirror removal reported skipped, unknown/mirror-less pair 400s
+  before any Simkl call, 401 refresh-and-retry with persistence,
+  401-without-refresh-token 502 with the baseline unchanged, and
+  proactive refresh persisted before an own removal.
+- `npm run build`: **0 errors** (type + lint checked; 19 warnings,
+  all pre-existing — the one new lint error the first build caught,
+  a non-serializable helper closure in the new section's change
+  handler, was fixed by inlining it).
+- Smoke: the **built server** (`server/entry.express.js`) ran
+  against a fixture `DATA_DIR` (synthetic encrypted pairs: TK with
+  mirror + baseline, Ange without) with `fetch` stubbed at the
+  process boundary via a `--import` preload. Over real HTTP:
+  `GET /` (configure) → 200; `GET /api/pairs` → 200 with both
+  pairs; invalid IMDb → 400; mirror removal on Ange's pair → 400
+  (no mirror connected); TK mirror episode removal → 200 with
+  `baselineUpdated: true`. The stub captured exactly one Simkl
+  call — `POST /sync/history/remove` carrying the **mirror**
+  client's key and the single-episode payload — and afterwards the
+  stored pair's baseline held `1:3` alongside `1:1`, `1:2`, the
+  mirror token was intact, and `debug.log` carried both `[remove]`
+  lines with Simkl's confirmed count. Server killed, fixtures
+  removed.
+
+**Not verified**
+
+- The Tailscale Serve path end to end (no Tailscale in this VM) —
+  docs + compose support only, per the design notes above.
+- The marking modes and the undo against real Simkl accounts and
+  in Stremio Kai on TK's PC; the remove endpoint's response shape
+  is from Simkl's published API reference, and the parser degrades
+  to no-count log lines if it ever differs.
+- `sync.ts` itself is not unit-testable in the node harness (it is
+  Qwik/TypeScript app code, like the rest of the receivers); its
+  gate decision is the tested `decideLiveMark`, and the wiring is
+  covered by the production build's type check.
+- Applying needs `docker compose up -d --build` — no pair re-save,
+  no data migration.

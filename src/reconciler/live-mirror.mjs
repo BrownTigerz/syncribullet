@@ -12,6 +12,11 @@
 // override when set, else the pair's stored flag), shared with the
 // reconciler via effectiveWatchTogether.
 //
+// The MIRROR_LIVE_MARK .env marking mode (marking-modes.mjs) can
+// further narrow the instant mirror — `movies` (episodes never
+// instant-mirror) or `off` (no instant mirror at all) — without ever
+// touching the reconciler's mirror pass.
+//
 // Pair matching: the addon config that made the pick carries the
 // picker's own Simkl app client_id (Simkl app per person, see
 // SETUP.md Step 4). A saved pair stores that same client_id in
@@ -39,6 +44,10 @@
 // debug log under scope `live` (DEBUG_LOG=0 silences these too).
 
 import { writeDebugLog } from './debug-log.mjs';
+import {
+  markingModeAllows,
+  mirrorLiveMarkMode,
+} from './marking-modes.mjs';
 import { getDataDir, loadPairs, updatePairAuth } from './pairs-store.mjs';
 import {
   formatAddedCounts,
@@ -92,6 +101,9 @@ export function itemInBaseline(baseline, item) {
  * Pure mirror decision for one live pick:
  *   { action: 'none', reason, pair? }     — not applicable; stay silent
  *   { action: 'excluded', pair }          — in the baseline; log + stop
+ *   { action: 'skipped-mode', mode, pair } — the MIRROR_LIVE_MARK .env
+ *                                           marking mode forbids this
+ *                                           pick type; log + stop
  *   { action: 'post', pair }              — post to the mirror account
  * 'none' covers every ordinary case (no pair for this config, Watch
  * Together off, no mirror account connected, no valid baseline) so the
@@ -120,6 +132,15 @@ export function decideLiveMirror({ pairs, clientId, item, env = process.env }) {
   }
   if (!pair.mirrorSimkl?.access_token || !pair.mirrorSimkl?.client_id) {
     return { action: 'none', reason: 'no-mirror-account', pair };
+  }
+  // Marking mode (MIRROR_LIVE_MARK): gates the instant mirror only,
+  // never the reconciler's mirror pass. Checked once the mirror
+  // machinery is known to apply to this pick, so a set mode logs one
+  // skip line per forbidden pick — and an unset mode (null) allows
+  // everything and adds no lines, exactly as before the switch.
+  const mode = mirrorLiveMarkMode(env);
+  if (!markingModeAllows(mode, item)) {
+    return { action: 'skipped-mode', reason: 'mirror-live-mark-mode', mode, pair };
   }
   if (!isWatchTogetherBaseline(pair.watchTogetherBaseline)) {
     return { action: 'none', reason: 'no-baseline', pair };
@@ -186,6 +207,12 @@ export async function mirrorLivePick({
     }
 
     const decision = decideLiveMirror({ pairs, clientId, item, env });
+    if (decision.action === 'skipped-mode') {
+      dbg(
+        `mirror skipped for ${formatPickedItem(item)} — MIRROR_LIVE_MARK=${decision.mode}`,
+      );
+      return decision;
+    }
     if (decision.action !== 'post' && decision.action !== 'excluded') {
       return decision;
     }

@@ -19,11 +19,19 @@ services:
       - "${HOST_PORT:-8181}:3000"
     environment:
       PRIVATE_ENCRYPTION_KEY: ${PRIVATE_ENCRYPTION_KEY:?Set PRIVATE_ENCRYPTION_KEY in .env}
-      APP_ORIGIN: http://localhost:${HOST_PORT:-8181}
+      # Public origin the server reports for itself. Defaults to the
+      # localhost address; set APP_ORIGIN in .env to the Tailscale
+      # HTTPS origin (https://<pc>.<tailnet>.ts.net) when Ange's addon
+      # is installed over Tailscale Serve (see SETUP.md).
+      APP_ORIGIN: ${APP_ORIGIN:-http://localhost:${HOST_PORT:-8181}}
       RECONCILE_INTERVAL_MINUTES: ${RECONCILE_INTERVAL_MINUTES:-30}
       # Watch Together solo/together switch: on/off (see SETUP.md).
       # Empty when unset in .env = no override; the pair's saved
       # Watch Together setting decides, as before.
       WATCH_TOGETHER: ${WATCH_TOGETHER:-}
+      # Marking modes for the live (stream-pick) writes: all / movies
+      # / off (see SETUP.md). Empty when unset = all, as before.
+      LIVE_MARK: ${LIVE_MARK:-}
+      MIRROR_LIVE_MARK: ${MIRROR_LIVE_MARK:-}
     volumes:
       - ./data:/app/data

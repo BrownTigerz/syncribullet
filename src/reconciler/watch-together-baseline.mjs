@@ -114,6 +114,39 @@ export function subtractWatchTogetherBaseline(watched, baseline) {
 }
 
 /**
+ * Return a NEW baseline with one item added (the input is not
+ * mutated): a movie by IMDb id, an episode by "season:episode" key
+ * under the show's IMDb id — the same scheme as the rest of this
+ * module. Duplicates are kept out and both lists stay sorted, so the
+ * result keeps the stored baseline's canonical shape.
+ *
+ * Used by the manual undo (remove-history.mjs): when an item is
+ * removed from the MIRROR account by hand, adding it to the starting
+ * point is what stops the reconciler from copying it across again on
+ * its next run.
+ */
+export function addToWatchTogetherBaseline(baseline, item) {
+  const movies = [...baseline.movies];
+  const shows = {};
+  for (const [imdb, episodes] of Object.entries(baseline.shows)) {
+    shows[imdb] = [...episodes];
+  }
+  if (Number.isFinite(item?.season) && Number.isFinite(item?.episode)) {
+    const key = `${item.season}:${item.episode}`;
+    const episodes = shows[item.imdb] || [];
+    if (!episodes.includes(key)) {
+      episodes.push(key);
+      episodes.sort(compareEpisodeKeys);
+    }
+    shows[item.imdb] = episodes;
+  } else if (item?.imdb && !movies.includes(item.imdb)) {
+    movies.push(item.imdb);
+    movies.sort();
+  }
+  return { ...baseline, movies, shows };
+}
+
+/**
  * Fetch the pair's full current watched set and snapshot it.
  * A partial snapshot is treated as failure: if any watched item is
  * unresolved (it might become resolvable later), storing the baseline

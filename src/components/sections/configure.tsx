@@ -10,6 +10,7 @@ import { server$, useLocation, useNavigate } from '@builder.io/qwik-city';
 // Components
 import ReceiversSection from '~/components/sections/receivers/receivers-section';
 import ReceiversSettings from '~/components/sections/receivers/receivers-settings';
+import RemoveHistorySection from '~/components/sections/remove-history/remove-history-section';
 import SavePairSection from '~/components/sections/save-pair/save-pair-section';
 import SendersSection from '~/components/sections/senders/senders-section';
 import SyncribulletSettings from '~/components/sections/syncribullet/syncribullet-settings';
@@ -291,6 +292,7 @@ export default component$<ConfigureProps>(({ config }) => {
           />
         )}
         <SavePairSection />
+        <RemoveHistorySection />
       </div>
     </>
   );

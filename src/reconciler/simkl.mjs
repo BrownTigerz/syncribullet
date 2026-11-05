@@ -1,10 +1,12 @@
 // Headless Simkl API access for the reconciler.
 // Same endpoints and headers the app already uses
 // (src/utils/receivers/simkl/api/headers.ts, src/utils/importers/simkl/api):
-//   POST /sync/history          (the only write — add-only)
+//   POST /sync/history          (the reconciler's only write — add-only)
+//   POST /sync/history/remove   (ONLY from the manual, per-item undo in
+//                                remove-history.mjs — never automatic)
 //   GET  /sync/all-items/       (full library read, per-episode detail)
 //   POST /oauth2/token          (AUTH V2 refresh grant)
-// No delete/remove or add-to-list call exists in this file by design.
+// No add-to-list call exists in this file by design.
 
 import { HttpError } from './stremio.mjs';
 
@@ -244,6 +246,93 @@ async function postHistoryChunk(auth, body) {
     body: JSON.stringify(body),
   });
   await throwOnError(response, 'POST /sync/history');
+  const data = await response.json().catch(() => ({}));
+  return { data, status: response.status };
+}
+
+/**
+ * Simkl's /sync/history/remove response reports what it actually
+ * unmarked in a `deleted` object ({ movies, shows, episodes } counts)
+ * — the mirror image of the `added` object on /sync/history. Parse it
+ * with the same defensive rules as parseAddedCounts: a missing or
+ * non-numeric field is unknown (null), a response with no usable
+ * counts at all yields null. Never throws. (A `removed` object is
+ * accepted as a fallback key, in case the API ever renames it.)
+ */
+export function parseRemovedCounts(data) {
+  const deleted =
+    data?.deleted && typeof data.deleted === 'object'
+      ? data.deleted
+      : data?.removed && typeof data.removed === 'object'
+        ? data.removed
+        : null;
+  if (!deleted) {
+    return null;
+  }
+  const count = (value) =>
+    typeof value === 'number' && Number.isFinite(value) && value >= 0
+      ? value
+      : null;
+  const parsed = {
+    movies: count(deleted.movies),
+    shows: count(deleted.shows),
+    episodes: count(deleted.episodes),
+  };
+  if (
+    parsed.movies === null &&
+    parsed.shows === null &&
+    parsed.episodes === null
+  ) {
+    return null;
+  }
+  return parsed;
+}
+
+/**
+ * One-line rendering of confirmed removal counts for the debug log,
+ * e.g. "Simkl removed 1 episode(s)" — the counterpart of
+ * formatAddedCounts, with the same rules (movies and episodes
+ * rendered, a known zero reported when nothing was removed).
+ */
+export function formatRemovedCounts(removed) {
+  if (!removed) {
+    return null;
+  }
+  const counts = [];
+  if (typeof removed.movies === 'number' && Number.isFinite(removed.movies)) {
+    counts.push({ label: 'movie(s)', value: removed.movies });
+  }
+  if (
+    typeof removed.episodes === 'number' &&
+    Number.isFinite(removed.episodes)
+  ) {
+    counts.push({ label: 'episode(s)', value: removed.episodes });
+  }
+  if (counts.length === 0) {
+    return null;
+  }
+  const positive = counts.filter((entry) => entry.value > 0);
+  const shown = positive.length > 0 ? positive : counts;
+  return `Simkl removed ${shown
+    .map((entry) => `${entry.value} ${entry.label}`)
+    .join(', ')}`;
+}
+
+/**
+ * POST /sync/history/remove with one single-item payload (the exact
+ * shape postHistory sends — see remove-history.mjs). This is the one
+ * deliberate exception to the build's add-only rule: it exists solely
+ * for the manual, per-item undo on the configure page and is never
+ * called by the reconciler or any automatic path.
+ * Returns { data, status }; throws HttpError like postHistoryChunk.
+ */
+export async function removeFromHistory(auth, payload) {
+  const response = await fetch(`${API}/sync/history/remove`, {
+    method: 'POST',
+    headers: simklHeaders(auth),
+    body: JSON.stringify(payload),
+  });
+  await throwOnError(response, 'POST /sync/history/remove');
   const data = await response.json().catch(() => ({}));
   return { data, status: response.status };
 }

@@ -216,8 +216,8 @@ export default component$(() => {
         <span class="text-on-surface-variant text-start max-w-full">
           Send the Stremio and Simkl connections from this browser to the
           server. The server then reconciles watched movies and episodes on
-          a schedule — even while this page is closed — and nothing is ever
-          removed from Simkl.
+          a schedule — even while this page is closed — and the reconciler
+          never removes anything from Simkl.
         </span>
       </div>
 

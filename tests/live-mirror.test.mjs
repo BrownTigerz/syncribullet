@@ -11,6 +11,12 @@ import {
   itemInBaseline,
   mirrorLivePick,
 } from '../src/reconciler/live-mirror.mjs';
+import {
+  decideLiveMark,
+  markingModeAllows,
+  mirrorLiveMarkMode,
+  parseMarkingMode,
+} from '../src/reconciler/marking-modes.mjs';
 import { savePairs } from '../src/reconciler/pairs-store.mjs';
 import { HttpError } from '../src/reconciler/stremio.mjs';
 
@@ -575,4 +581,168 @@ test('live mirror waits for the reconciler after a switch-on (applied mode still
   assert.equal(result.reason, 'switch-pending');
   assert.equal(calls.length, 0);
   assert.equal(readDebugLog(options.dataDir), '');
+});
+
+// --- Marking modes (LIVE_MARK / MIRROR_LIVE_MARK) ---------------------
+
+test('marking mode parsing: values, case, whitespace, garbage', () => {
+  assert.equal(parseMarkingMode('all'), 'all');
+  assert.equal(parseMarkingMode('ALL'), 'all');
+  assert.equal(parseMarkingMode(' movies '), 'movies');
+  assert.equal(parseMarkingMode('Off'), 'off');
+  assert.equal(parseMarkingMode(''), null);
+  assert.equal(parseMarkingMode('banana'), null);
+  assert.equal(parseMarkingMode('true'), null);
+  assert.equal(parseMarkingMode(undefined), null);
+  assert.equal(parseMarkingMode(null), null);
+  assert.equal(parseMarkingMode(42), null);
+  assert.equal(mirrorLiveMarkMode({ MIRROR_LIVE_MARK: 'off' }), 'off');
+  assert.equal(mirrorLiveMarkMode({}), null);
+});
+
+test('own live-mark decision matrix (decideLiveMark)', () => {
+  const movie = { imdb: 'tt1000002' };
+  const episode = { imdb: 'tt1000010', season: 1, episode: 3 };
+
+  // Unset: everything allowed, mode null (no skip lines anywhere).
+  assert.deepEqual(decideLiveMark({}, movie), { allowed: true, mode: null });
+  assert.deepEqual(decideLiveMark({}, episode), { allowed: true, mode: null });
+  // Invalid value: same as unset, never a guess.
+  assert.deepEqual(decideLiveMark({ LIVE_MARK: 'banana' }, episode), {
+    allowed: true,
+    mode: null,
+  });
+  // all: everything allowed, mode reported.
+  assert.deepEqual(decideLiveMark({ LIVE_MARK: 'all' }, episode), {
+    allowed: true,
+    mode: 'all',
+  });
+  // movies: movies allowed, episodes not.
+  assert.deepEqual(decideLiveMark({ LIVE_MARK: 'movies' }, movie), {
+    allowed: true,
+    mode: 'movies',
+  });
+  assert.deepEqual(decideLiveMark({ LIVE_MARK: 'movies' }, episode), {
+    allowed: false,
+    mode: 'movies',
+  });
+  // off: nothing allowed.
+  assert.deepEqual(decideLiveMark({ LIVE_MARK: 'off' }, movie), {
+    allowed: false,
+    mode: 'off',
+  });
+  assert.deepEqual(decideLiveMark({ LIVE_MARK: 'off' }, episode), {
+    allowed: false,
+    mode: 'off',
+  });
+  assert.equal(markingModeAllows(null, episode), true);
+});
+
+test('mirror decision: MIRROR_LIVE_MARK gates by pick type', () => {
+  const pairs = [tkPair(), angePair()];
+  const episode = { imdb: 'tt1000010', season: 1, episode: 3 }; // not in baseline
+  const movie = { imdb: 'tt1000002' }; // not in baseline
+  const baselineMovie = { imdb: 'tt1000001' }; // in baseline
+
+  const off = decideLiveMirror({
+    pairs,
+    clientId: 'tk-client',
+    item: episode,
+    env: { MIRROR_LIVE_MARK: 'off' },
+  });
+  assert.equal(off.action, 'skipped-mode');
+  assert.equal(off.mode, 'off');
+
+  const moviesEpisode = decideLiveMirror({
+    pairs,
+    clientId: 'tk-client',
+    item: episode,
+    env: { MIRROR_LIVE_MARK: 'movies' },
+  });
+  assert.equal(moviesEpisode.action, 'skipped-mode');
+  assert.equal(moviesEpisode.mode, 'movies');
+
+  // Movies still post under `movies`; the baseline still decides for
+  // items the mode allows.
+  assert.equal(
+    decideLiveMirror({
+      pairs,
+      clientId: 'tk-client',
+      item: movie,
+      env: { MIRROR_LIVE_MARK: 'movies' },
+    }).action,
+    'post',
+  );
+  assert.equal(
+    decideLiveMirror({
+      pairs,
+      clientId: 'tk-client',
+      item: baselineMovie,
+      env: { MIRROR_LIVE_MARK: 'movies' },
+    }).action,
+    'excluded',
+  );
+  // Unset: unchanged behavior.
+  assert.equal(
+    decideLiveMirror({ pairs, clientId: 'tk-client', item: episode, env: {} })
+      .action,
+    'post',
+  );
+  // A pair Watch Together does not apply to stays silent under a mode.
+  assert.equal(
+    decideLiveMirror({
+      pairs,
+      clientId: 'ange-client',
+      item: episode,
+      env: { MIRROR_LIVE_MARK: 'off' },
+    }).action,
+    'none',
+  );
+});
+
+test('mirrorLivePick logs one skip line per mode-skipped pick and posts nothing', async (t) => {
+  const calls = [];
+  const options = baseOptions(t, {
+    postHistoryFn: recordingPostHistory(calls),
+  });
+
+  const episode = await mirrorLivePick({
+    ...options,
+    clientId: 'tk-client',
+    item: { imdb: 'tt1000010', season: 1, episode: 3 },
+    env: { MIRROR_LIVE_MARK: 'off' },
+  });
+  assert.equal(episode.action, 'skipped-mode');
+  assert.equal(calls.length, 0);
+  assert.match(
+    readDebugLog(options.dataDir),
+    /\[live\] mirror skipped for tt1000010 S1E3 — MIRROR_LIVE_MARK=off/,
+  );
+
+  const calls2 = [];
+  const options2 = baseOptions(t, {
+    postHistoryFn: recordingPostHistory(calls2),
+  });
+  const movieSkipped = await mirrorLivePick({
+    ...options2,
+    clientId: 'tk-client',
+    item: { imdb: 'tt1000002' },
+    env: { MIRROR_LIVE_MARK: 'off' },
+  });
+  assert.equal(movieSkipped.action, 'skipped-mode');
+  assert.equal(calls2.length, 0);
+
+  // Under `movies`, a movie pick still instant-mirrors as before.
+  const calls3 = [];
+  const options3 = baseOptions(t, {
+    postHistoryFn: recordingPostHistory(calls3),
+  });
+  const moviePosted = await mirrorLivePick({
+    ...options3,
+    clientId: 'tk-client',
+    item: { imdb: 'tt1000002' },
+    env: { MIRROR_LIVE_MARK: 'movies' },
+  });
+  assert.equal(moviePosted.action, 'posted');
+  assert.equal(calls3.length, 1);
 });

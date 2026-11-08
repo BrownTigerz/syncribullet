@@ -221,9 +221,12 @@ export function clearEinthusanMatch(siteId, dataDir = getDataDir()) {
 // ---------------------------------------------------------------------------
 
 /**
- * Simkl search returns poster as a path fragment (e.g. "ab/123_w.jpg");
- * posters are served from https://simkl.in/posters/<fragment>. Pass
- * full URLs through untouched.
+ * Simkl search returns poster as a path fragment. The /search/movie
+ * endpoint hands back a bare fragment with no size suffix or extension
+ * (e.g. "74/74415673dcdc9cdd"), which 404s as-is; the CDN serves it once
+ * a size suffix is appended ("..._m.jpg" = 340px). Fragments that
+ * already end in a size suffix + extension (e.g. "ab/123_w.jpg") pass
+ * through untouched, as do full URLs.
  */
 export function simklPosterUrl(poster) {
   if (typeof poster !== 'string' || !poster.trim()) {
@@ -233,7 +236,12 @@ export function simklPosterUrl(poster) {
   if (/^https?:\/\//i.test(value)) {
     return value;
   }
-  return `https://simkl.in/posters/${value.replace(/^\/+/, '')}`;
+  const fragment = value.replace(/^\/+/, '');
+  if (/_(?:w|m|ca|s|o)\.(?:jpe?g|webp|png)$/i.test(fragment)) {
+    return `https://simkl.in/posters/${fragment}`;
+  }
+  const base = fragment.replace(/\.(?:jpe?g|webp|png)$/i, '');
+  return `https://simkl.in/posters/${base}_m.jpg`;
 }
 
 /**

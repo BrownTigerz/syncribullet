@@ -138,7 +138,16 @@ test('parseSimklSearchResults: both id spellings, poster prefixing, junk dropped
   assert.equal(candidates[1].poster, 'https://x/y.jpg');
   assert.equal(candidates[2].title, 'Nested');
   assert.equal(simklPosterUrl(''), null);
-  assert.equal(simklPosterUrl('/lead.jpg'), 'https://simkl.in/posters/lead.jpg');
+  // Bare /search/movie fragment (no suffix, no extension): the CDN 404s
+  // it as-is and serves it once a size suffix is appended (verified live).
+  assert.equal(
+    simklPosterUrl('74/74415673dcdc9cdd'),
+    'https://simkl.in/posters/74/74415673dcdc9cdd_m.jpg',
+  );
+  assert.equal(
+    simklPosterUrl('/lead.jpg'),
+    'https://simkl.in/posters/lead_m.jpg',
+  );
 });
 
 test('search: resolves the pair and returns parsed candidates', async (t) => {

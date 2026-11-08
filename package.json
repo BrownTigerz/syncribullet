@@ -31,7 +31,8 @@
     "test:reconciler": "node --test tests/reconciler.test.mjs",
     "test:live-mirror": "node --test tests/live-mirror.test.mjs",
     "test:remove-history": "node --test tests/remove-history.test.mjs",
-    "qwik": "qwik"
+    "qwik": "qwik",
+    "test:einthusan": "node --test tests/einthusan.test.mjs"
   },
   "devDependencies": {
     "@builder.io/qwik": "^1.13.0",

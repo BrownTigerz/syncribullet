@@ -285,6 +285,40 @@ Simkl's own confirmed count:
 
 `[remove] removed tt0121955 S29E4 from mirror of pair TK (HTTP 201) — Simkl removed 1 episode(s)`
 
+## Einthusan — Marking Movies Watched On Einthusan.tv
+
+A Brave extension (Brave Simkl Tracker, in its own zip) marks
+movies watched on einthusan.tv on TK's Simkl, through this server.
+The server side is three endpoints under `/api/einthusan` (search,
+saved matches, mark); there is nothing to configure on the server
+beyond updating it — the extension holds the Server Address and
+Pair Name, and the pair is resolved by name like everything else.
+
+How it behaves:
+
+- First play of a movie shows an on-page panel with the Simkl
+  match. Confirming saves the match in `data/einthusan-matches.json`,
+  keyed by the movie's Einthusan page id, so the panel never asks
+  again for that movie. The saved match is identity only.
+- The mark posts when playback position crosses the extension's
+  "Mark As Watched At" slider (default 60%). The server checks
+  TK's Simkl library first — already there means no duplicate
+  post. Marks land in `data\debug.log` under `[einthusan]`, with
+  Simkl's confirmed count.
+- Solo / Together for Einthusan is chosen in the extension, not
+  on the server: the toolbar popup holds the default, the on-page
+  panel can override it per movie, and the choice is saved with
+  the match in the same file. A Together mark also posts the
+  movie to the pair's mirror account (the mirror sign-in saved
+  on the pair), deduped against the mirror library first; the
+  mark response reports the mirror outcome, and mirror results
+  land in the same `[einthusan]` log lines. This is fully
+  independent of Stremio's Watch Together, its starting point,
+  and the Solo.bat / Together.bat switch — none of those are
+  read or changed by Einthusan marks, and a mirror failure never
+  fails the mark on TK's own Simkl. The reconciler does not read
+  the matches file.
+
 ## Step 8 — Install The Addon In Stremio Kai
 
 Per person, on their own machine, from their own configure session:
